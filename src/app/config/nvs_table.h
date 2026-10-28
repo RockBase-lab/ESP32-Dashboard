@@ -48,8 +48,10 @@
 
 // ─── Default values (used when NVS key is absent) ─────────────────────────
 // Open-Meteo is fully free and requires no API key.
-#define DEFAULT_WIFI_SSID        ""
-#define DEFAULT_WIFI_PASSWORD    ""
+// Factory default WiFi — lets a fresh device attempt a connection on first
+// power-up before any configuration. Overridden by NVS once the user saves.
+#define DEFAULT_WIFI_SSID        "RockBase_2.4G"
+#define DEFAULT_WIFI_PASSWORD    "NMMiner2048"
 #define DEFAULT_LAT              "30.6667"
 #define DEFAULT_LON              "104.0667"
 #define DEFAULT_CITY             "Chengdu, Sichuan, China"

@@ -337,7 +337,7 @@ public:
     uint8_t bootButtonPin() const override { return PIN_BOOT_BTN; }
     uint8_t apButtonPin()   const override { return PIN_AP_BTN; }
 
-    const char *boardName() const override { return "NM-Display-420"; }
+    const char *boardName() const override { return "NM-EPD-420"; }
 
 private:
     EpdDriver    _epd;

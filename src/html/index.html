@@ -164,7 +164,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--rb-primary); box
     <div class="brand-mark">
       <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M7 4v16M17 4v16M4 17h16"/></svg>
     </div>
-    <div><div class="brand-title">RockBase IoT Dashboard</div><div class="brand-sub">NM-EPD-420 setup</div></div>
+    <div><div class="brand-title">RockBase IoT Dashboard</div><div class="brand-sub" id="brandSub">NM-EPD-420 setup</div></div>
   </div>
   <div class="top-status" id="topStatus"></div>
   <button class="btn danger" onclick="restartDevice()">Restart</button>
@@ -335,6 +335,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--rb-primary); box
       <div class="panel span-6"><div class="panel-head"><div class="panel-title">Schedule</div></div><div class="panel-body form-grid"><label>Refresh minutes</label><input id="d_SleepMin" type="number" min="1"><label>Bed hour</label><input id="d_BedTime" type="number" min="0" max="23"><label>Wake hour</label><input id="d_WakeTime" type="number" min="0" max="23"><label>Config window sec</label><input id="d_PortalSec" type="number" min="0" max="600"></div></div>
       <div class="panel span-6"><div class="panel-head"><div class="panel-title">Display</div></div><div class="panel-body form-grid"><label>Time format</label><select id="d_TimeFmt"><option value="%H:%M">24-hour</option><option value="%I:%M %p">12-hour</option></select><label>Date format</label><select id="d_DateFmt"><option value="%a, %B %e">Mon, July 20</option><option value="%Y/%m/%d">2026/07/20</option><option value="%Y-%m-%d">2026-07-20</option></select><label>Language</label><select id="d_Language"><option value="en_US">English</option><option value="zh_CN">Chinese</option></select></div></div>
       <div class="panel span-6"><div class="panel-head"><div class="panel-title">Units</div></div><div class="panel-body form-grid"><label>Temperature</label><select id="d_UnitsTemp"><option value="C">Celsius</option><option value="F">Fahrenheit</option></select><div class="field-note">Applies to Weather Home, Weather Today, Weekly Weather, and Indoor Climate / 同步所有温度页面。</div><label>Pressure</label><select id="d_UnitsPres"><option value="hPa">hPa</option><option value="inHg">inHg</option><option value="mmHg">mmHg</option></select><label>Distance</label><select id="d_UnitsDist"><option value="km">km</option><option value="mi">miles</option></select></div></div>
+      <div class="panel span-6"><div class="panel-head"><div class="panel-title">Timezone</div></div><div class="panel-body form-grid"><label>City</label><select id="d_TzCity" onchange="applyDeviceTzCity()"></select><label>IANA timezone</label><input id="d_TzId" placeholder="Asia/Shanghai"><div class="field-note">Format: IANA ID exactly as in the city list (case-sensitive, e.g. Europe/Berlin). Only zones from the list work — the device has no full timezone database. "UTC+1" style is NOT supported; for UTC+1 pick Berlin or Paris. Sets both the device clock offset and the Home timezone used by page headers. / 格式：与城市列表完全一致的 IANA ID（区分大小写，如 Europe/Berlin）。设备没有完整时区数据库，仅支持列表内的时区；不支持 "UTC+1" 写法，UTC+1 请选择 Berlin 或 Paris。保存时同时写入设备时钟偏移与页眉 Home 时区。</div></div></div>
     </div>
   </section>
 
@@ -359,23 +360,87 @@ var sourceDeps = {
   focus: ['focus'],
   indoor: ['indoor']
 };
+// City list mirrors the device timezone catalog (src/app/time/timezone_catalog.cpp)
+// — every entry is guaranteed to resolve on the device. Shared by the Device
+// Timezone select and all World Clock city selects, so they stay in sync.
 var worldCityOptions = [
   { name: '', label: 'Select city', tz: '' },
   { name: 'custom', label: 'Custom', tz: '' },
-  { name: 'Shanghai', label: 'Shanghai', tz: 'Asia/Shanghai' },
-  { name: 'Beijing', label: 'Beijing', tz: 'Asia/Shanghai' },
-  { name: 'Tokyo', label: 'Tokyo', tz: 'Asia/Tokyo' },
-  { name: 'Seoul', label: 'Seoul', tz: 'Asia/Seoul' },
-  { name: 'New York', label: 'New York', tz: 'America/New_York' },
-  { name: 'Los Angeles', label: 'Los Angeles', tz: 'America/Los_Angeles' },
-  { name: 'Chicago', label: 'Chicago', tz: 'America/Chicago' },
-  { name: 'Denver', label: 'Denver', tz: 'America/Denver' },
-  { name: 'London', label: 'London', tz: 'Europe/London' },
-  { name: 'Berlin', label: 'Berlin', tz: 'Europe/Berlin' },
-  { name: 'Paris', label: 'Paris', tz: 'Europe/Paris' },
-  { name: 'Sydney', label: 'Sydney', tz: 'Australia/Sydney' },
-  { name: 'UTC', label: 'UTC', tz: 'UTC' }
+  { name: 'UTC', label: 'UTC', tz: 'Etc/UTC', offset: 0 },
+  // Asia
+  { name: 'Shanghai', label: 'Shanghai', tz: 'Asia/Shanghai', offset: 8 },
+  { name: 'Beijing', label: 'Beijing', tz: 'Asia/Shanghai', offset: 8 },
+  { name: 'HongKong', label: 'Hong Kong', tz: 'Asia/Hong_Kong', offset: 8 },
+  { name: 'Singapore', label: 'Singapore', tz: 'Asia/Singapore', offset: 8 },
+  { name: 'Taipei', label: 'Taipei', tz: 'Asia/Taipei', offset: 8 },
+  { name: 'KualaLumpur', label: 'Kuala Lumpur', tz: 'Asia/Kuala_Lumpur', offset: 8 },
+  { name: 'Manila', label: 'Manila', tz: 'Asia/Manila', offset: 8 },
+  { name: 'Tokyo', label: 'Tokyo', tz: 'Asia/Tokyo', offset: 9 },
+  { name: 'Seoul', label: 'Seoul', tz: 'Asia/Seoul', offset: 9 },
+  { name: 'Bangkok', label: 'Bangkok', tz: 'Asia/Bangkok', offset: 7 },
+  { name: 'Jakarta', label: 'Jakarta', tz: 'Asia/Jakarta', offset: 7 },
+  { name: 'HoChiMinh', label: 'Ho Chi Minh', tz: 'Asia/Ho_Chi_Minh', offset: 7 },
+  { name: 'Kolkata', label: 'Kolkata', tz: 'Asia/Kolkata', offset: 5.5 },
+  { name: 'Dubai', label: 'Dubai', tz: 'Asia/Dubai', offset: 4 },
+  { name: 'Riyadh', label: 'Riyadh', tz: 'Asia/Riyadh', offset: 3 },
+  { name: 'Istanbul', label: 'Istanbul', tz: 'Asia/Istanbul', offset: 3 },
+  { name: 'Jerusalem', label: 'Jerusalem', tz: 'Asia/Jerusalem', offset: 2 },
+  // Europe
+  { name: 'London', label: 'London', tz: 'Europe/London', offset: 0 },
+  { name: 'Dublin', label: 'Dublin', tz: 'Europe/Dublin', offset: 0 },
+  { name: 'Lisbon', label: 'Lisbon', tz: 'Europe/Lisbon', offset: 0 },
+  { name: 'Berlin', label: 'Berlin', tz: 'Europe/Berlin', offset: 1 },
+  { name: 'Paris', label: 'Paris', tz: 'Europe/Paris', offset: 1 },
+  { name: 'Rome', label: 'Rome', tz: 'Europe/Rome', offset: 1 },
+  { name: 'Madrid', label: 'Madrid', tz: 'Europe/Madrid', offset: 1 },
+  { name: 'Amsterdam', label: 'Amsterdam', tz: 'Europe/Amsterdam', offset: 1 },
+  { name: 'Zurich', label: 'Zurich', tz: 'Europe/Zurich', offset: 1 },
+  { name: 'Stockholm', label: 'Stockholm', tz: 'Europe/Stockholm', offset: 1 },
+  { name: 'Budapest', label: 'Budapest', tz: 'Europe/Budapest', offset: 1 },
+  { name: 'Warsaw', label: 'Warsaw', tz: 'Europe/Warsaw', offset: 1 },
+  { name: 'Helsinki', label: 'Helsinki', tz: 'Europe/Helsinki', offset: 2 },
+  { name: 'Athens', label: 'Athens', tz: 'Europe/Athens', offset: 2 },
+  { name: 'Chisinau', label: 'Chisinau', tz: 'Europe/Chisinau', offset: 2 },
+  { name: 'Moscow', label: 'Moscow', tz: 'Europe/Moscow', offset: 3 },
+  // North America
+  { name: 'NewYork', label: 'New York', tz: 'America/New_York', offset: -5 },
+  { name: 'Toronto', label: 'Toronto', tz: 'America/Toronto', offset: -5 },
+  { name: 'Chicago', label: 'Chicago', tz: 'America/Chicago', offset: -6 },
+  { name: 'MexicoCity', label: 'Mexico City', tz: 'America/Mexico_City', offset: -6 },
+  { name: 'Regina', label: 'Regina', tz: 'America/Regina', offset: -6 },
+  { name: 'Denver', label: 'Denver', tz: 'America/Denver', offset: -7 },
+  { name: 'Phoenix', label: 'Phoenix', tz: 'America/Phoenix', offset: -7 },
+  { name: 'LosAngeles', label: 'Los Angeles', tz: 'America/Los_Angeles', offset: -8 },
+  { name: 'Vancouver', label: 'Vancouver', tz: 'America/Vancouver', offset: -8 },
+  { name: 'Anchorage', label: 'Anchorage', tz: 'America/Anchorage', offset: -9 },
+  { name: 'Honolulu', label: 'Honolulu', tz: 'Pacific/Honolulu', offset: -10 },
+  // South America
+  { name: 'PuertoRico', label: 'Puerto Rico', tz: 'America/Puerto_Rico', offset: -4 },
+  { name: 'Bogota', label: 'Bogota', tz: 'America/Bogota', offset: -5 },
+  { name: 'Lima', label: 'Lima', tz: 'America/Lima', offset: -5 },
+  { name: 'Santiago', label: 'Santiago', tz: 'America/Santiago', offset: -4 },
+  { name: 'BuenosAires', label: 'Buenos Aires', tz: 'America/Argentina/Buenos_Aires', offset: -3 },
+  { name: 'SaoPaulo', label: 'Sao Paulo', tz: 'America/Sao_Paulo', offset: -3 },
+  // Oceania
+  { name: 'Sydney', label: 'Sydney', tz: 'Australia/Sydney', offset: 10 },
+  { name: 'Melbourne', label: 'Melbourne', tz: 'Australia/Melbourne', offset: 10 },
+  { name: 'Brisbane', label: 'Brisbane', tz: 'Australia/Brisbane', offset: 10 },
+  { name: 'Perth', label: 'Perth', tz: 'Australia/Perth', offset: 8 },
+  { name: 'Auckland', label: 'Auckland', tz: 'Pacific/Auckland', offset: 12 },
+  // Africa
+  { name: 'Johannesburg', label: 'Johannesburg', tz: 'Africa/Johannesburg', offset: 2 },
+  { name: 'Cairo', label: 'Cairo', tz: 'Africa/Cairo', offset: 2 },
+  { name: 'Nairobi', label: 'Nairobi', tz: 'Africa/Nairobi', offset: 3 }
 ];
+// Resolve a custom IANA timezone against the device-supported list above.
+function findDeviceCity(tz) {
+  tz = trimText(tz);
+  if (tz === 'UTC' || tz === 'GMT') return { tz: 'Etc/UTC', offset: 0 };
+  for (var i = 0; i < worldCityOptions.length; i++) {
+    if (worldCityOptions[i].tz && worldCityOptions[i].tz === tz) return worldCityOptions[i];
+  }
+  return null;
+}
 
 function $(id) { return document.getElementById(id); }
 function setVal(id, value) { var el = $(id); if (el) el.value = value == null ? '' : String(value); }
@@ -403,6 +468,30 @@ function initWorldClockCityOptions() {
 function looksLikeTimezoneId(value) {
   value = trimText(value);
   return value.indexOf('/') >= 0 || value.indexOf('Etc/') === 0 || value === 'UTC' || value === 'GMT';
+}
+function initDeviceTzOptions() {
+  var select = $('d_TzCity');
+  if (!select || select.options.length) return;
+  worldCityOptions.forEach(function(opt, idx) {
+    var option = document.createElement('option');
+    option.value = opt.name === 'custom' ? 'custom' : String(idx);
+    option.textContent = opt.label + (opt.tz ? ' - ' + opt.tz : '');
+    select.appendChild(option);
+  });
+}
+function applyDeviceTzCity() {
+  var select = $('d_TzCity');
+  if (!select || select.value === 'custom' || select.value === '0') return;
+  var opt = worldCityOptions[parseInt(select.value, 10)];
+  if (opt && opt.tz) setVal('d_TzId', opt.tz);
+}
+function syncDeviceTzCitySelect() {
+  var select = $('d_TzCity');
+  if (!select) return;
+  var tz = trimText(getVal('d_TzId'));
+  var match = -1;
+  worldCityOptions.forEach(function(opt, idx) { if (opt.tz && opt.tz === tz && match < 0) match = idx; });
+  select.value = match >= 0 ? String(match) : 'custom';
 }
 function fallbackWorldZoneLabel(zoneId) {
   zoneId = trimText(zoneId);
@@ -519,6 +608,13 @@ function reloadAll() {
 function loadConfig() {
   return api('/api/config').then(function(cfg) {
     state.config = cfg;
+    // Brand/title: "RockBase IoT Dashboard <Board> setup <version>".
+    var board = cfg.Board || 'NM-EPD-420';
+    var ver = cfg.FwVersion || '';
+    var setupLine = board + ' setup' + (ver ? ' ' + ver : '');
+    document.title = 'RockBase IoT Dashboard ' + setupLine;
+    var brandSub = $('brandSub');
+    if (brandSub) brandSub.textContent = setupLine;
     setVal('d_WifiSSID', cfg.WifiSSID);
     setVal('d_WifiPSWD', '');
     setVal('d_SleepMin', cfg.SleepMin);
@@ -531,6 +627,9 @@ function loadConfig() {
     setVal('d_UnitsTemp', cfg.UnitsTemp);
     setVal('d_UnitsPres', cfg.UnitsPres);
     setVal('d_UnitsDist', cfg.UnitsDist);
+    setVal('d_TzId', cfg.TzId);
+    syncDeviceTzCitySelect();
+    setVal('t_TzId', cfg.TzId);
   });
 }
 function loadPages() { return api('/api/pages').then(function(p){ state.pages = p; renderPages(); renderSourceVisibility(); }); }
@@ -691,6 +790,20 @@ function saveDevice() {
     DateFmt:getVal('d_DateFmt'), Language:getVal('d_Language'), UnitsTemp:getVal('d_UnitsTemp'), UnitsPres:getVal('d_UnitsPres'), UnitsDist:getVal('d_UnitsDist')
   };
   var pwd = getVal('d_WifiPSWD'); if (pwd) data.WifiPSWD = pwd;
+  // Timezone: write both the IANA ID (page chrome / world clock) and the
+  // whole-hour UTC offset (device clock sync) so the two never diverge.
+  // The value must resolve on the DEVICE — validate against the mirrored
+  // device timezone catalog and abort with a hint when unsupported.
+  var tzId = trimText(getVal('d_TzId'));
+  if (tzId) {
+    var city = findDeviceCity(tzId);
+    if (!city) {
+      toast('Invalid timezone', '"' + tzId + '" is not in the device timezone list. Use an IANA ID exactly as listed in the city dropdown (e.g. Europe/Berlin, case-sensitive). "UTC+1" style is not supported. / 时区不受支持：请使用下拉列表中的 IANA ID（区分大小写，如 Europe/Berlin），不支持 "UTC+1" 写法。', true);
+      return;
+    }
+    data.TzId = city.tz;
+    data.Timezone = Math.round(city.offset);
+  }
   api('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) })
     .then(function(){ toast('Device saved', 'Restart now or keep editing.'); return loadConfig(); })
     .then(promptRestart)
@@ -704,6 +817,7 @@ function restartDevice(silent) {
 }
 document.addEventListener('DOMContentLoaded', function() {
   initWorldClockCityOptions();
+  initDeviceTzOptions();
   reloadAll();
 });
 </script>

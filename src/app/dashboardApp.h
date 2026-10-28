@@ -86,14 +86,16 @@ private:
                                      int64_t nowUtc, WeatherClass &weather,
                                      const CalendarPageSnapshot &calendarSnapshot,
                                      const AppConfig &cfg, const String &localIP,
-                                     const calm_grid::ChromeContext &chrome);
+                                     const calm_grid::ChromeContext &chrome,
+                                     bool preferPartial = false);
     static void _renderDisplayPage(IBoard &board, PageManager &pageManager,
                                    DisplayPageState page, int64_t nowUtc,
                                    WeatherClass &weather,
                                    const CalendarPageSnapshot &calendarSnapshot,
                                    const AppConfig &cfg,
                                    const String &localIP,
-                                   const calm_grid::ChromeContext &chrome);
+                                   const calm_grid::ChromeContext &chrome,
+                                   bool preferPartial = false);
     static void _ensurePageData(IBoard &board, DisplayPageState page,
                                 WeatherClass &weather,
                                 CalendarPageSnapshot &calendarSnapshot,

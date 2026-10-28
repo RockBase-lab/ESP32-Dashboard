@@ -81,4 +81,16 @@ void PageLoading400x300::draw() {
             baseline += maxHeight + kStatusLineGap;
         }
     }
+
+    // Device model line, centered near the bottom in the accent/highlight color.
+    if (_model) {
+        _gfx->setFont(&FONT_9pt8b);
+        _gfx->setTextColor(_modelColor);
+        int16_t tx, ty;
+        uint16_t tw, th;
+        _gfx->getTextBounds(_model, 0, 0, &tx, &ty, &tw, &th);
+        _gfx->setCursor(cx - static_cast<int16_t>(tw / 2),
+                        _h - 12);  // baseline; FONT_9pt8b caps fit above it
+        _gfx->print(_model);
+    }
 }

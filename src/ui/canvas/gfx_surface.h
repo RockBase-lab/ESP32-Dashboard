@@ -8,6 +8,11 @@ class GfxSurface final : public IDrawSurface {
 public:
     explicit GfxSurface(Adafruit_GFX &gfx);
 
+    // Map the logical dashboard colors (kDashboardAccent / kDashboardHighlight)
+    // to colors the attached panel can actually display. Call once after
+    // construction with the board's pigment colors. Default: pass-through.
+    void setPaletteColors(uint16_t accent, uint16_t highlight);
+
     int16_t width() const override;
     int16_t height() const override;
 
@@ -21,5 +26,10 @@ public:
     int16_t measureText(const std::string &text, uint8_t size = 1) const override;
 
 private:
+    // Logical dashboard color → physical panel color mapping.
+    uint16_t mapColor(uint16_t color) const;
+
     Adafruit_GFX &_gfx;
+    uint16_t      _accent    = kDashboardAccent;     // pass-through by default
+    uint16_t      _highlight = kDashboardHighlight;
 };

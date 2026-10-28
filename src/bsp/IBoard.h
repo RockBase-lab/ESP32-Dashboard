@@ -22,6 +22,19 @@ public:
 
     // Advance to next page; returns false when all pages are done.
     virtual bool nextPage() = 0;
+
+    // ── Partial (fast-waveform) refresh — BW panels only ────────────────────
+    // True when the panel supports windowed partial updates (fast waveform,
+    // no full-screen flash). Three/four-color panels report false.
+    virtual bool supportsPartialRefresh() const { return false; }
+
+    // Push the given rectangle of the CURRENT framebuffer to the panel using
+    // the partial-update waveform. The content must already have been drawn
+    // via gfx(); do NOT call this inside a firstPage()/nextPage() loop.
+    // Default: no-op (panels without partial support must use paged drawing).
+    virtual void refreshWindowPartial(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+        (void)x; (void)y; (void)w; (void)h;
+    }
 };
 
 // ─── Board interface ────────────────────────────────────────────────────────

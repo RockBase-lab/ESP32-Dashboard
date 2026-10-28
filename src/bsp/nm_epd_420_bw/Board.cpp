@@ -1,0 +1,330 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <GxEPD2_BW.h>
+#include <gdey/GxEPD2_420_GDEY042T81.h>
+#include "drivers/sensor/aht20/Aht20Sensor.h"
+#include <esp_sleep.h>
+#include <driver/gpio.h>
+#include <driver/rtc_io.h>
+#include <soc/gpio_struct.h>
+
+#include "bsp/IBoard.h"
+#include "bsp/battery_adc.h"
+#include "config.h"
+#include "utils/logger.h"
+
+static const char *TAG = "EPD420BW";
+
+// ─── EPD display object ─────────────────────────────────────────────────────
+// 4.2" Black/White EPD (GxEPD2_420_GDEY042T81, SSD1683), 400×300 px.
+// Full-height framebuffer (400×300/8 = 15000 B) so a page can be drawn without
+// paging and pushed with displayWindow() for partial (fast-waveform) refresh.
+static GxEPD2_420_GDEY042T81 _epd_driver(
+    /*CS=*/   PIN_EPD_CS,
+    /*DC=*/   PIN_EPD_DC,
+    /*RST=*/  PIN_EPD_RST,
+    /*BUSY=*/ PIN_EPD_BUSY
+);
+static GxEPD2_BW<GxEPD2_420_GDEY042T81,
+                 GxEPD2_420_GDEY042T81::HEIGHT> _display(_epd_driver);
+
+// ─── EpdDriver adapter ────────────────────────────────────────────────────
+class EpdDriver final : public IEpdDriver {
+public:
+    void init(bool initialPowerOn) override {
+        SPI.begin(PIN_EPD_SCK, PIN_EPD_MISO, PIN_EPD_MOSI, PIN_EPD_CS);
+        _display.init(115200, initialPowerOn);
+    }
+    void hibernate() override { _display.hibernate(); }
+    void firstPage() override { _display.firstPage(); }
+    bool nextPage() override  { return _display.nextPage(); }
+
+    // GDEY042T81 has a partial-update waveform (hasPartialUpdate = true).
+    bool supportsPartialRefresh() const override { return true; }
+
+    // Push the given window of the full framebuffer using the fast partial
+    // waveform (~0.3–0.6 s, no full-screen flash). Caller must have drawn the
+    // content via gfx() beforehand (outside any firstPage/nextPage loop).
+    void refreshWindowPartial(uint16_t x, uint16_t y, uint16_t w, uint16_t h) override {
+        _display.displayWindow(x, y, w, h);
+    }
+};
+
+// ─── Board implementation ─────────────────────────────────────────────────
+// ─── Light-sleep wake ISR latch ─────────────────────────────────────────────
+// Level-triggered GPIO interrupts captured while the CPU is in light sleep;
+// OR-ed into the wake status after esp_light_sleep_start() returns so a fast
+// press/release is not lost when the hardware status register reads zero.
+static volatile uint64_t s_lightSleepIsrStatus = 0;
+
+static void IRAM_ATTR lightSleepWakeIsr(void *arg) {
+    const uint8_t pin = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(arg));
+    if (pin < 64) {
+        s_lightSleepIsrStatus |= (1ULL << pin);
+    }
+}
+
+class Board final : public IBoard {
+public:
+    void init() override {
+        Serial.begin(115200);
+
+        // Release GPIO hold that may have been set before the previous deep sleep,
+        // then (re-)initialise each pin to its idle/off state.
+        gpio_deep_sleep_hold_dis();
+        // Peripheral enable / control pins.
+        gpio_hold_dis((gpio_num_t)PIN_PA_CTRL);
+        gpio_hold_dis((gpio_num_t)PIN_LORA_EN);
+        gpio_hold_dis((gpio_num_t)PIN_LORA_NSS);
+        gpio_hold_dis((gpio_num_t)PIN_LORA_SCK);
+        gpio_hold_dis((gpio_num_t)PIN_LORA_MOSI);
+        gpio_hold_dis((gpio_num_t)PIN_LORA_MISO);
+        rtc_gpio_hold_dis((gpio_num_t)PIN_LORA_MOSI);
+        rtc_gpio_hold_dis((gpio_num_t)PIN_LORA_MISO);
+        rtc_gpio_deinit((gpio_num_t)PIN_LORA_MOSI);
+        rtc_gpio_deinit((gpio_num_t)PIN_LORA_MISO);
+        gpio_hold_dis((gpio_num_t)PIN_LORA_RST);
+        gpio_hold_dis((gpio_num_t)PIN_LORA_BUSY);
+        gpio_hold_dis((gpio_num_t)PIN_LORA_DIO1);
+        gpio_hold_dis((gpio_num_t)PIN_TF_CS);
+        gpio_hold_dis((gpio_num_t)PIN_EPD_RST);
+        gpio_hold_dis((gpio_num_t)PIN_TEMP_SDA);
+        gpio_hold_dis((gpio_num_t)PIN_TEMP_SCL);
+        gpio_hold_dis((gpio_num_t)PIN_CODEC_EN);
+        gpio_hold_dis((gpio_num_t)PIN_ADC_EN);
+        gpio_hold_dis((gpio_num_t)PIN_TEMP_CTL);
+
+        // rev2: hardware enable pins — keep all modules powered off until needed.
+        // ES8311 codec: hardware power cut via PIN_CODEC_EN; no I2C powerdown required.
+        pinMode(PIN_LORA_EN,  OUTPUT); digitalWrite(PIN_LORA_EN,  LOW);  // LoRa off
+        pinMode(PIN_CODEC_EN, OUTPUT); digitalWrite(PIN_CODEC_EN, LOW);  // Codec off
+        pinMode(PIN_ADC_EN,   OUTPUT); digitalWrite(PIN_ADC_EN,   LOW);  // ADC off
+
+        // Legacy control pins — idle/off states.
+        // Audio is not implemented in this application, so the power amplifier
+        // stays disabled for the whole wake cycle. Driving it HIGH here would
+        // burn current from boot until prepareForSleep() ran.
+        pinMode(PIN_PA_CTRL,  OUTPUT); digitalWrite(PIN_PA_CTRL,  LOW);  // PA off
+        pinMode(PIN_LORA_NSS,  INPUT); // LoRa SPI chip-select high-Z while module is powered off
+        pinMode(PIN_LORA_SCK,  INPUT); // LoRa SPI clock high-Z while module is powered off
+        pinMode(PIN_LORA_MOSI, INPUT); // LoRa SPI MOSI high-Z while module is powered off
+        pinMode(PIN_LORA_MISO, INPUT); // LoRa SPI MISO high-Z while module is powered off
+        pinMode(PIN_LORA_RST,  INPUT); // LoRa reset high-Z while module is powered off
+        pinMode(PIN_LORA_BUSY, INPUT); // LoRa BUSY high-Z while module is powered off
+        pinMode(PIN_LORA_DIO1, INPUT); // LoRa DIO1 high-Z while module is powered off
+        // PIN_TEMP_CTL (AHT20 power) stays LOW here. Aht20Sensor::begin() raises
+        // it only for the duration of a reading, and end() drops it again.
+    }
+
+    IEpdDriver   &epd()          override { return _epd; }
+    Adafruit_GFX &gfx()          override { return _display; }
+    uint16_t      dispWidth()  const override { return DISP_WIDTH; }
+    uint16_t      dispHeight() const override { return DISP_HEIGHT; }
+    uint16_t      colorBlack() const override { return GxEPD_BLACK; }
+    uint16_t      colorWhite() const override { return GxEPD_WHITE; }
+    // Pure BW panel — no chromatic pigment; accent degrades to black.
+    uint16_t      colorAccent()    const override { return GxEPD_BLACK; }
+    bool          hasAccentColor() const override { return false; }
+    uint16_t      colorHighlight()    const override { return GxEPD_WHITE; }
+    bool          hasHighlightColor() const override { return false; }
+    ISensor      *getTempSensor()   override { return &_sensor; }
+
+    void shutdownSensors() override { _sensor.end(); }
+
+    uint32_t readBatteryMv() override {
+        // rev2: gated resistor-divider network — enable the ADC circuit, let it
+        // settle, configure the ADC, average a burst, then disable the divider.
+        // See bsp/battery_adc.h for why 11 dB attenuation is mandatory.
+        pinMode(PIN_ADC_EN, OUTPUT);
+        digitalWrite(PIN_ADC_EN, HIGH);
+        delay(BATT_ADC_SETTLE_MS); // let the divider network settle
+        batteryAdcConfigure(PIN_BATT_ADC); // IO3, ADC1_CH2 — attach, then 11 dB
+        const uint32_t adcMv = batteryAdcAverageMilliVolts(PIN_BATT_ADC);
+        digitalWrite(PIN_ADC_EN, LOW);
+        return batteryAdcToBatteryMv(adcMv, BATT_ADC_DIV);
+    }
+
+    void prepareForSleep() override {
+        // ── Drive all power-enable pins LOW (modules off) ─────────────────────
+        pinMode(PIN_LORA_EN,   OUTPUT); digitalWrite(PIN_LORA_EN,   LOW); // IO47 — LoRa power on (held LOW)
+        pinMode(PIN_CODEC_EN,  OUTPUT); digitalWrite(PIN_CODEC_EN,  LOW);  // IO44 — ES8311 off
+        pinMode(PIN_ADC_EN,    OUTPUT); digitalWrite(PIN_ADC_EN,    LOW);  // IO43 — ADC circuit off
+        pinMode(PIN_TEMP_CTL,  OUTPUT); digitalWrite(PIN_TEMP_CTL,  LOW);  // IO40 — AHT20 off
+        pinMode(PIN_PA_CTRL,   OUTPUT); digitalWrite(PIN_PA_CTRL,   LOW);  // IO41 — PA off
+
+        delay(10); // let all GPIO outputs stabilise
+
+        // ── Set remaining GPIOs to high-Z (floating input, no pull) ──────────
+        // IO0 (BOOT / EXT0 wakeup) is intentionally excluded — RTC GPIO must not
+        // be reconfigured here; the wakeup subsystem owns it.
+        static const uint8_t kHiZ[] = {
+            PIN_LORA_NSS, PIN_LORA_SCK, PIN_LORA_RST, PIN_LORA_BUSY, PIN_LORA_DIO1, PIN_LORA_MISO,PIN_LORA_MOSI,
+            PIN_EPD_BUSY, PIN_EPD_CS,  PIN_EPD_DC,  PIN_EPD_SCK,  PIN_EPD_MOSI,  PIN_EPD_RST, // EPD SPI
+            PIN_TEMP_SCL, PIN_TEMP_SDA,
+            PIN_TF_CS,                                                             // TF CS
+            PIN_I2S_SCLK, PIN_I2S_ASDOUT, PIN_I2S_LRCK, PIN_I2S_DSIN, PIN_I2S_MCLK, // I2S
+            PIN_BATT_ADC,
+            PIN_AP_BTN,
+        };
+        for (uint8_t p : kHiZ) {
+            pinMode(p, INPUT); // INPUT = floating, no pull-up/pull-down
+        }
+    }
+
+    void deepSleep(uint64_t microseconds) override {
+        prepareForSleep();
+        pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
+        pinMode(PIN_AP_BTN, INPUT_PULLUP);
+        // ── Latch driven output pins across deep sleep ────────────────────────
+        // Latched LOW:
+        gpio_hold_en((gpio_num_t)PIN_LORA_EN);
+        gpio_hold_en((gpio_num_t)PIN_CODEC_EN);
+        gpio_hold_en((gpio_num_t)PIN_ADC_EN);
+        gpio_hold_en((gpio_num_t)PIN_TEMP_CTL);
+        gpio_hold_en((gpio_num_t)PIN_PA_CTRL);
+        gpio_deep_sleep_hold_en(); // ESP32-S3: retain latches when IO domain powers off
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+        const esp_err_t timerErr = microseconds > 0
+            ? esp_sleep_enable_timer_wakeup(microseconds)
+            : ESP_OK;
+        const esp_err_t bootErr = esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+        log_i(TAG,
+              "Deep sleep setup: timer=%llu timerErr=%d bootWake=GPIO%u err=%d userWake=unsupported GPIO%u is not RTC IO",
+              static_cast<unsigned long long>(microseconds),
+              static_cast<int>(timerErr),
+              static_cast<unsigned>(PIN_BOOT_BTN),
+              static_cast<int>(bootErr),
+              static_cast<unsigned>(PIN_AP_BTN));
+        Serial.flush(); // drain USB CDC TX buffer before digital core powers off
+        esp_deep_sleep_start();
+    }
+
+    LightWake lightSleepMs(uint32_t maxMs) override {
+        // Buttons must stay readable both while running and during sleep.
+        pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
+        pinMode(PIN_AP_BTN, INPUT_PULLUP);
+        gpio_sleep_set_direction((gpio_num_t)PIN_BOOT_BTN, GPIO_MODE_INPUT);
+        gpio_sleep_set_pull_mode((gpio_num_t)PIN_BOOT_BTN, GPIO_PULLUP_ONLY);
+        gpio_sleep_set_direction((gpio_num_t)PIN_AP_BTN, GPIO_MODE_INPUT);
+        gpio_sleep_set_pull_mode((gpio_num_t)PIN_AP_BTN, GPIO_PULLUP_ONLY);
+
+        // ISR latch for fast press/release (hardware status can read zero).
+        s_lightSleepIsrStatus = 0;
+        const esp_err_t isrServiceErr = gpio_install_isr_service(0); // INVALID_STATE = already installed, OK
+        gpio_set_intr_type((gpio_num_t)PIN_BOOT_BTN, GPIO_INTR_LOW_LEVEL);
+        gpio_set_intr_type((gpio_num_t)PIN_AP_BTN, GPIO_INTR_LOW_LEVEL);
+        const esp_err_t isrBootErr = gpio_isr_handler_add(
+            (gpio_num_t)PIN_BOOT_BTN, lightSleepWakeIsr, (void *)(uintptr_t)PIN_BOOT_BTN);
+        const esp_err_t isrUserErr = gpio_isr_handler_add(
+            (gpio_num_t)PIN_AP_BTN, lightSleepWakeIsr, (void *)(uintptr_t)PIN_AP_BTN);
+
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+        const esp_err_t gpioWakeErr = esp_sleep_enable_gpio_wakeup();
+        const esp_err_t bootWakeErr = gpio_wakeup_enable((gpio_num_t)PIN_BOOT_BTN, GPIO_INTR_LOW_LEVEL);
+        const esp_err_t userWakeErr = gpio_wakeup_enable((gpio_num_t)PIN_AP_BTN, GPIO_INTR_LOW_LEVEL);
+        const esp_err_t timerErr    = maxMs > 0
+            ? esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(maxMs) * 1000ULL)
+            : ESP_OK;
+
+        const bool setupOk =
+            (isrServiceErr == ESP_OK || isrServiceErr == ESP_ERR_INVALID_STATE) &&
+            isrBootErr == ESP_OK && isrUserErr == ESP_OK &&
+            gpioWakeErr == ESP_OK && bootWakeErr == ESP_OK &&
+            userWakeErr == ESP_OK && timerErr == ESP_OK;
+        log_i(TAG,
+              "Light sleep setup: maxMs=%lu isrService=%d isrBoot=%d isrUser=%d gpioWake=%d bootWake=%d userWake=%d timer=%d",
+              static_cast<unsigned long>(maxMs),
+              (int)isrServiceErr, (int)isrBootErr, (int)isrUserErr,
+              (int)gpioWakeErr, (int)bootWakeErr, (int)userWakeErr, (int)timerErr);
+        if (!setupOk) {
+            // Critical: a timer-only light sleep could never report button wakes.
+            log_e(TAG, "Light sleep setup failed — skipping sleep");
+            gpio_isr_handler_remove((gpio_num_t)PIN_BOOT_BTN);
+            gpio_isr_handler_remove((gpio_num_t)PIN_AP_BTN);
+            gpio_set_intr_type((gpio_num_t)PIN_BOOT_BTN, GPIO_INTR_DISABLE);
+            gpio_set_intr_type((gpio_num_t)PIN_AP_BTN, GPIO_INTR_DISABLE);
+            return LightWake::Other;
+        }
+
+        Serial.flush(); // drain USB CDC TX buffer before the CPU stalls
+        esp_light_sleep_start();
+
+        // Latch wake status immediately after return.
+        const uint64_t gpioStatus = static_cast<uint64_t>(GPIO.status) |
+                                    (static_cast<uint64_t>(GPIO.status1.val) << 32);
+        const uint64_t isrStatus  = s_lightSleepIsrStatus;
+
+        // Cleanup: disarm wake sources and remove the temporary ISRs.
+        gpio_wakeup_disable((gpio_num_t)PIN_BOOT_BTN);
+        gpio_wakeup_disable((gpio_num_t)PIN_AP_BTN);
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+        gpio_isr_handler_remove((gpio_num_t)PIN_BOOT_BTN);
+        gpio_isr_handler_remove((gpio_num_t)PIN_AP_BTN);
+        gpio_set_intr_type((gpio_num_t)PIN_BOOT_BTN, GPIO_INTR_DISABLE);
+        gpio_set_intr_type((gpio_num_t)PIN_AP_BTN, GPIO_INTR_DISABLE);
+
+        const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        const LightWake wake = classifyLightWake(
+            cause == ESP_SLEEP_WAKEUP_TIMER,
+            cause == ESP_SLEEP_WAKEUP_GPIO,
+            gpioStatus | isrStatus,
+            PIN_BOOT_BTN, PIN_AP_BTN,
+            digitalRead(PIN_BOOT_BTN) == LOW,
+            digitalRead(PIN_AP_BTN) == LOW);
+        log_i(TAG,
+              "Light sleep returned: cause=%d statusHi=0x%08lx statusLo=0x%08lx isrHi=0x%08lx isrLo=0x%08lx bootLvl=%d userLvl=%d wake=%d",
+              (int)cause,
+              (unsigned long)(uint32_t)(gpioStatus >> 32), (unsigned long)(uint32_t)gpioStatus,
+              (unsigned long)(uint32_t)(isrStatus >> 32), (unsigned long)(uint32_t)isrStatus,
+              (int)digitalRead(PIN_BOOT_BTN), (int)digitalRead(PIN_AP_BTN), (int)wake);
+        return wake;
+    }
+
+    LightWake timerOnlyLightSleepMs(uint32_t maxMs) override {
+        pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
+        pinMode(PIN_AP_BTN, INPUT_PULLUP);
+
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+        const esp_err_t timerErr = maxMs > 0
+            ? esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(maxMs) * 1000ULL)
+            : ESP_OK;
+        if (timerErr != ESP_OK) {
+            log_e(TAG, "Timer-only light sleep setup failed: maxMs=%lu timer=%d",
+                  static_cast<unsigned long>(maxMs), static_cast<int>(timerErr));
+            return LightWake::Other;
+        }
+
+        Serial.flush();
+        esp_light_sleep_start();
+
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+        const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        const LightWake wake = classifyLightWake(cause == ESP_SLEEP_WAKEUP_TIMER,
+                                                 /*gpioFired=*/false,
+                                                 /*gpioWakeStatus=*/0,
+                                                 /*bootPin=*/0xFF,
+                                                 /*userPin=*/0xFF,
+                                                 /*bootPressedNow=*/false,
+                                                 /*userPressedNow=*/false);
+        log_i(TAG, "Timer-only light sleep returned: cause=%d wake=%d",
+              static_cast<int>(cause), static_cast<int>(wake));
+        return wake;
+    }
+
+    uint8_t bootButtonPin() const override { return PIN_BOOT_BTN; }
+    uint8_t apButtonPin()   const override { return PIN_AP_BTN; }
+
+    const char *boardName() const override { return "NM-EPD-420-BW"; }
+
+private:
+    EpdDriver    _epd;
+    // AHT20: TEMP_CTL (GPIO40) is driven HIGH in Aht20Sensor::begin().
+    Aht20Sensor  _sensor{PIN_TEMP_SDA, PIN_TEMP_SCL, PIN_TEMP_CTL};
+};
+
+// ─── Singleton accessor ───────────────────────────────────────────────────
+IBoard &getBoard() {
+    static Board board;
+    return board;
+}

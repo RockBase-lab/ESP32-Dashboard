@@ -18,7 +18,12 @@
 #include "app/page/page_manager.h"
 #include "app/security/secret_store.h"
 #include "app/web/web_config_validation.h"
+#include "bsp/IBoard.h"
 #include "utils/logger.h"
+
+#ifndef FW_VERSION
+#define FW_VERSION "v0.0.0-dev"
+#endif
 
 static const char *TAG_WS = "WebServer";
 
@@ -42,6 +47,8 @@ static bool isSensitiveConfigKey(const String &key) {
 
 static String configToJson(const AppConfig &cfg) {
     JsonDocument doc;
+    doc["FwVersion"]            = FW_VERSION;
+    doc["Board"]                = getBoard().boardName();
     doc[NVS_KEY_WIFI_SSID]      = cfg.wifiSsid;
     doc[NVS_KEY_WIFI_PASSWORD]  = "";
     doc[NVS_KEY_LAT]            = cfg.lat;

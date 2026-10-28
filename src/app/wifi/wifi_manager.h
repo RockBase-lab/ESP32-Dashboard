@@ -11,7 +11,12 @@ public:
 
     // Synchronize the system clock via SNTP.
     // utcOffsetHours is the UTC offset in hours, e.g. 8 for UTC+8, -5 for UTC-5.
+    // Falls back to HTTP time sources when all NTP (UDP) servers fail.
     void syncTime(int utcOffsetHours);
+
+    // HTTP-based time sync for networks that block UDP/NTP.
+    // Tries JSON time APIs first, then plain-HTTP Date headers.
+    bool syncTimeHttp(int utcOffsetHours);
 
     // Disconnect WiFi and power down the radio.
     void disconnect();

@@ -1135,6 +1135,10 @@ void DashboardApp::_enterApMode(IBoard &board) {
     apPage.create(board.gfx(), board.dispWidth(), board.dispHeight(),
                   board.colorAccent(), board.hasAccentColor());
     apPage.setStatus(apStatus);
+    // Model line: yellow on the 4C panel (highlight pigment), red otherwise.
+    apPage.setModel(board.boardName(),
+                    board.hasHighlightColor() ? board.colorHighlight()
+                                              : board.colorAccent());
     board.epd().firstPage();
     do { apPage.draw(); } while (board.epd().nextPage());
 
@@ -1305,12 +1309,20 @@ void DashboardApp::_renderDashboardPage(IBoard &board, PageManager &pageManager,
                                         int64_t nowUtc, WeatherClass &weather,
                                         const CalendarPageSnapshot &calendarSnapshot,
                                         const AppConfig &cfg, const String &localIP,
-                                        const calm_grid::ChromeContext &chrome) {
+                                        const calm_grid::ChromeContext &chrome,
+                                        bool preferPartial) {
     const PageDescriptor *descriptor = findPage(page);
     log_i(TAG, "Rendering dashboard page: %s (%u)",
           descriptor ? descriptor->name : "Unknown", static_cast<unsigned>(page));
 #if defined(UI_LAYOUT_EPD_400x300)
     GfxSurface surface(board.gfx());
+    // Map logical accent/highlight onto pigments this panel actually has.
+    // BW panels get black for both, so accent content stays visible.
+    const uint16_t surfaceAccent =
+        board.hasAccentColor() ? board.colorAccent() : board.colorBlack();
+    const uint16_t surfaceHighlight =
+        board.hasHighlightColor() ? board.colorHighlight() : surfaceAccent;
+    surface.setPaletteColors(surfaceAccent, surfaceHighlight);
     const size_t pageNumber = pageManager.pageNumber(page);
     const size_t pageCount = pageManager.pageCount();
     const HomeWeatherSnapshot homeWeatherSnapshot =
@@ -1318,8 +1330,13 @@ void DashboardApp::_renderDashboardPage(IBoard &board, PageManager &pageManager,
     const HomeWeatherPalette homeWeatherPalette{
         board.colorWhite(), board.colorBlack(), board.colorAccent(),
         board.colorHighlight(), board.hasHighlightColor()};
-    board.epd().firstPage();
-    do {
+
+    // Partial (fast-waveform) refresh path: BW panels draw the whole page into
+    // the full framebuffer once, then push it with the partial waveform — no
+    // full-screen flash. Only valid outside the paged drawing loop.
+    const bool usePartial = preferPartial && board.epd().supportsPartialRefresh();
+
+    auto drawPageContent = [&]() {
         switch (page) {
             case PageId::WeatherToday:
                 renderWeatherTodayPage(surface, buildWeatherPageSnapshot(weather, cfg),
@@ -1411,8 +1428,17 @@ void DashboardApp::_renderDashboardPage(IBoard &board, PageManager &pageManager,
             default:
                 break;
         }
-    } while (board.epd().nextPage());
-    log_i(TAG, "Render complete");
+    };
+
+    if (usePartial) {
+        drawPageContent();
+        board.epd().refreshWindowPartial(0, 0, board.dispWidth(), board.dispHeight());
+        log_i(TAG, "Render complete (partial refresh)");
+    } else {
+        board.epd().firstPage();
+        do { drawPageContent(); } while (board.epd().nextPage());
+        log_i(TAG, "Render complete");
+    }
 #else
     _renderWeather(board, weather, cfg, localIP);
 #endif
@@ -1423,13 +1449,15 @@ void DashboardApp::_renderDisplayPage(IBoard &board, PageManager &pageManager,
                                       WeatherClass &weather,
                                       const CalendarPageSnapshot &calendarSnapshot,
                                       const AppConfig &cfg, const String &localIP,
-                                      const calm_grid::ChromeContext &chrome) {
+                                      const calm_grid::ChromeContext &chrome,
+                                      bool preferPartial) {
     if (page.isHomeWeather()) {
         _renderWeather(board, weather, cfg, localIP);
         return;
     }
     _renderDashboardPage(board, pageManager, page.managedPage(),
-                         nowUtc, weather, calendarSnapshot, cfg, localIP, chrome);
+                         nowUtc, weather, calendarSnapshot, cfg, localIP, chrome,
+                         preferPartial);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1590,8 +1618,12 @@ DisplayPageState DashboardApp::_runFocusClockSession(IBoard &board, PageManager 
 
         const uint32_t batteryMv = board.readBatteryMv();
         const auto chrome = buildChromeContext(cfg, wakeUtc, localIP, batteryMv);
+        // Periodic focus-mode re-render: prefer the partial (fast-waveform)
+        // refresh on panels that support it (NM-EPD-420-BW) to avoid a
+        // full-screen flash every refresh interval.
         _renderDisplayPage(board, pageManager, currentPage, wakeUtc, weather,
-                           calendarSnapshot, cfg, localIP, chrome);
+                           calendarSnapshot, cfg, localIP, chrome,
+                           /*preferPartial=*/true);
         const uint32_t contentHash = displayContentHash(currentPage, weather, cfg, localIP,
                                                         wakeUtc, batteryMv);
         gDashboardRtcPageState = snapshotDisplayRtcState(pageManager, currentPage,
