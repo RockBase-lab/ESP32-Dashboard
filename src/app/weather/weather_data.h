@@ -11,6 +11,7 @@
 // ─── Weather data structures ──────────────────────────────────────────────
 
 struct WeatherCurrent {
+    String time;                 // ISO 8601 local time from Open-Meteo
     float temperature;           // °C (convert in UI per unitsTemp)
     float apparent_temperature;  // °C
     float humidity;              // %
@@ -18,6 +19,8 @@ struct WeatherCurrent {
     float wind_direction;        // degrees
     float pressure;              // hPa (convert in UI per unitsPres)
     float visibility;            // metres (open-meteo returns metres)
+    float cloud_cover = NAN;     // %; NAN when the provider omits the field
+    float precipitation = NAN;   // mm; NAN when the provider omits the field
     int   weather_code;          // WMO weather interpretation code
     bool  is_day;
 };
@@ -27,6 +30,7 @@ struct WeatherHourly {
     float  temperature;                // °C
     int    weather_code;
     int    precipitation_probability;  // %
+    float  precipitation = NAN;         // mm
     int    humidity;                   // % relative humidity
 };
 
@@ -42,7 +46,7 @@ struct WeatherDaily {
 
 struct WeatherData {
     WeatherCurrent             current;
-    std::vector<WeatherHourly> hourly;  // next 12 h
+    std::vector<WeatherHourly> hourly;  // first 24 h of the local forecast day
     std::vector<WeatherDaily>  daily;   // next 4 days (including today)
     String                     timezone;
     float                      elevation      = NAN; // metres above sea level (from 90m DEM)

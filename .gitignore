@@ -5,3 +5,7 @@
 .vscode/ipch
 build_output.txt
 data/
+release/
+.codex_tmp/
+.codex/
+.pio_core/

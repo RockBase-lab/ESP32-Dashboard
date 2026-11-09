@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "drivers/sensor/ISensor.h"
+#include "utils/light_wake.h"
 
 // ─── EPD driver interface ───────────────────────────────────────────────────
 class IEpdDriver {
@@ -21,6 +22,19 @@ public:
 
     // Advance to next page; returns false when all pages are done.
     virtual bool nextPage() = 0;
+
+    // ── Partial (fast-waveform) refresh — BW panels only ────────────────────
+    // True when the panel supports windowed partial updates (fast waveform,
+    // no full-screen flash). Three/four-color panels report false.
+    virtual bool supportsPartialRefresh() const { return false; }
+
+    // Push the given rectangle of the CURRENT framebuffer to the panel using
+    // the partial-update waveform. The content must already have been drawn
+    // via gfx(); do NOT call this inside a firstPage()/nextPage() loop.
+    // Default: no-op (panels without partial support must use paged drawing).
+    virtual void refreshWindowPartial(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+        (void)x; (void)y; (void)w; (void)h;
+    }
 };
 
 // ─── Board interface ────────────────────────────────────────────────────────
@@ -50,19 +64,54 @@ public:
     virtual uint16_t colorAccent()    const = 0;
     virtual bool     hasAccentColor() const = 0;
 
+    // Optional second chromatic pigment. Four-color panels expose yellow;
+    // three-color and black/white panels report no highlight pigment.
+    virtual uint16_t colorHighlight()    const = 0;
+    virtual bool     hasHighlightColor() const = 0;
+
     // Optional temperature/humidity sensor; returns nullptr if not present.
+    // The returned sensor is initially powered DOWN — callers must begin() it
+    // before reading and end() it immediately afterwards.
     virtual ISensor *getTempSensor() = 0;
 
+    // Power down every board-controlled peripheral that is not needed for
+    // rendering: sensors, radios, codecs, amplifiers. Idempotent, and safe to
+    // call at any point. Callers use this to guarantee a known-off state before
+    // entering any sleep mode or before abandoning a wake cycle into AP mode.
+    virtual void shutdownSensors() = 0;
+
     // Battery voltage in millivolts (0 if not measurable).
+    //
+    // Contract for implementations: the battery divider network must be gated
+    // by its own enable pin, powered up only for the duration of the sampling
+    // burst and powered down again before returning. The ADC must be
+    // explicitly configured (12-bit resolution, ADC_11db attenuation) rather
+    // than relying on library defaults — the ESP32-S3 default attenuation
+    // (~6 dB, ~1750 mV full scale) saturates a 1:1-divided Li-ion cell from
+    // about 3.5 V upward and makes the reading useless.
     virtual uint32_t readBatteryMv() = 0;
+
+    // Shut down board-controlled rails/peripherals before any sleep mode.
+    virtual void prepareForSleep() = 0;
 
     // Enter deep sleep for the given duration.
     virtual void deepSleep(uint64_t microseconds) = 0;
 
+    // Enter light sleep for at most maxMs, waking early on a BOOT/USER button
+    // press (low level). Unlike deepSleep(), RAM and peripherals are retained
+    // and execution continues on the next line. Do NOT call prepareForSleep()
+    // before this — the display and sensors stay powered. Returns what caused
+    // the wake. Boards without buttons wake on the timer only.
+    virtual LightWake lightSleepMs(uint32_t maxMs) = 0;
+
+    // Timer-only light sleep. Used by page-local modes that poll buttons after
+    // waking instead of allowing a GPIO wake to escape into global handling.
+    virtual LightWake timerOnlyLightSleepMs(uint32_t maxMs) = 0;
+
     // GPIO pin numbers for physical buttons (external pull-up, pressed = LOW).
     // Returns 0xFF if this board does not have the button.
-    virtual uint8_t bootButtonPin() const = 0;  // IO0 / BOOT key (RTC GPIO, can wake deep sleep)
-    virtual uint8_t apButtonPin()   const = 0;  // User-defined AP config key
+    virtual uint8_t bootButtonPin() const = 0;  // IO0 / BOOT key on NM-EPD-420
+    virtual uint8_t apButtonPin()   const = 0;  // User key; may not be deep-sleep wake capable
 
     // Short human-readable board identifier, e.g. "FireBeetle2-ESP32E".
     virtual const char *boardName() const = 0;
