@@ -96,7 +96,7 @@
 
 | 环境名称 | MCU | 显示屏 | 分辨率 | 颜色 | 传感器 | 备注 |
 |---|---|---|---|---|---|---|
-| `nm-display-420` | ESP32-S3 | 4.2″ EPD (GDEY042Z98) | 400 × 300 | 红/黑/白 | AHT20 | |
+| `nm-display-420` | ESP32-S3 | 4.2″ 三色 EPD | 400 × 300 | 红/黑/白 | AHT20 | 自动识别 SSD1683（GDEY042Z98）、SSD1619A（HINK-E042A07/A13）和 UC8179 |
 | `nm-epd-420-4c` | ESP32-S3 | 4.2″ 四色 EPD (GDEY0420F51) | 400 × 300 | 红/黑/白/黄 | AHT20 | 支持现有 Dashboard 页面；黄色配色留待后续 Home 阶段 |
 | `dfrobot_firebeetle2_esp32e` / `firebeetle32` | ESP32 | 7.5″ EPD (GDEY075T7) | 800 × 480 | 黑/白 | BME280 | 计划支持，很快上线，尚未实测 |
 

@@ -14,10 +14,28 @@ import os
 import subprocess
 import sys
 
-Import("env")
+Import("env", "projenv")
 
 sys.path.insert(0, env.subst("$PROJECT_DIR"))
 from scripts.release_image import create_release_image
+
+# ─── Firmware version define ────────────────────────────────────────────────
+# Compile the release version (VERSION file) into the firmware as FW_VERSION
+# so the web portal can display it. Build flags MUST go to projenv in post
+# scripts — appending to plain env here is silently ignored by the compiler.
+def _read_fw_version(project_dir):
+    version_path = os.path.join(project_dir, "VERSION")
+    try:
+        with open(version_path, "r", encoding="utf-8") as handle:
+            version = handle.readline().strip()
+    except OSError:
+        version = ""
+    return version or "v0.0.0"
+
+_fw_version = _read_fw_version(env.subst("$PROJECT_DIR"))
+projenv.Append(CPPDEFINES=[("FW_VERSION", projenv.StringifyMacro(_fw_version))])
+_log_version = "[EPD/FS] Firmware version define: %s" % _fw_version
+print(_log_version)
 
 
 def _log(message):
@@ -86,6 +104,10 @@ if "release_bin" in COMMAND_LINE_TARGETS and "buildfs" not in COMMAND_LINE_TARGE
     release_fs_image = env.DataToBin("$BUILD_DIR/littlefs", "$PROJECT_DATA_DIR")
     env.NoCache(release_fs_image)
     AlwaysBuild(release_fs_image)
+    # The pre-action on "$BUILD_DIR/littlefs.bin" (below) does not fire for
+    # this manually-created node, so hook web-asset regeneration directly —
+    # otherwise release images ship a stale web portal.
+    env.AddPreAction(release_fs_image, build_web_assets)
 
 def upload_all_action(target, source, env):
     project_dir = env.subst("$PROJECT_DIR")
