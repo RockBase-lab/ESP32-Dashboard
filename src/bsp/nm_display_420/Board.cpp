@@ -1,41 +1,226 @@
 #include <Arduino.h>
 #include <SPI.h>
+#ifndef ENABLE_GxEPD2_GFX
+#define ENABLE_GxEPD2_GFX 1
+#endif
 #include <GxEPD2_3C.h>
+#include <GxEPD2_GFX.h>
+#include <gdey3c/GxEPD2_420c_GDEY042Z98.h>
 #include "drivers/sensor/aht20/Aht20Sensor.h"
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <soc/gpio_struct.h>
 
 #include "bsp/IBoard.h"
 #include "bsp/battery_adc.h"
 #include "config.h"
+#include "epd_ssd1619a_420c.h"
+#include "epd_uc8179_420c.h"
 #include "utils/logger.h"
 
 static const char *TAG = "EPD420";
 
-// ─── EPD display object ─────────────────────────────────────────────────────
-// 4.2" Red/Black/White EPD (GxEPD2_420c_GDEY042Z98), 400×300 px.
-// GxEPD2 1.6.x: pins are passed to the driver class, which is then wrapped.
-static GxEPD2_420c_GDEY042Z98 _epd_driver(
-    /*CS=*/   PIN_EPD_CS,
-    /*DC=*/   PIN_EPD_DC,
-    /*RST=*/  PIN_EPD_RST,
-    /*BUSY=*/ PIN_EPD_BUSY
-);
-static GxEPD2_3C<GxEPD2_420c_GDEY042Z98,
-                 GxEPD2_420c_GDEY042Z98::HEIGHT / 2> _display(_epd_driver);
+// 0 = SSD1683 (GDEY042Z98), 1 = UC8179, 2 = auto-detect, 5 = SSD1619A.
+#ifndef EPD_DRIVER_MODE
+#define EPD_DRIVER_MODE 2
+#endif
+
+// ─── EPD display objects ─────────────────────────────────────────────────────
+// All supported panels are 4.2" 400×300 black/white/red. Runtime selection is
+// required because SSD1683 and SSD1619A have the same idle BUSY polarity but
+// incompatible initialization/refresh commands.
+static constexpr uint16_t EPD_PAGE_HEIGHT = GxEPD2_420c_GDEY042Z98::HEIGHT / 2;
+using Ssd1683Display = GxEPD2_3C<GxEPD2_420c_GDEY042Z98, EPD_PAGE_HEIGHT>;
+using Uc8179Display = GxEPD2_3C<GxEPD2_420c_NM_UC8179, EPD_PAGE_HEIGHT>;
+using Ssd1619aDisplay = GxEPD2_3C<GxEPD2_420c_NM_SSD1619A, EPD_PAGE_HEIGHT>;
+
+static GxEPD2_420c_GDEY042Z98 _ssd1683Driver(
+    PIN_EPD_CS, PIN_EPD_DC, PIN_EPD_RST, PIN_EPD_BUSY);
+static GxEPD2_420c_NM_UC8179 _uc8179Driver(
+    PIN_EPD_CS, PIN_EPD_DC, PIN_EPD_RST, PIN_EPD_BUSY);
+static GxEPD2_420c_NM_SSD1619A _ssd1619aDriver(
+    PIN_EPD_CS, PIN_EPD_DC, PIN_EPD_RST, PIN_EPD_BUSY);
+static Ssd1683Display _ssd1683(_ssd1683Driver);
+static Uc8179Display _uc8179(_uc8179Driver);
+static Ssd1619aDisplay _ssd1619a(_ssd1619aDriver);
+static GxEPD2_GFX *_activeDisplay = &_ssd1683;
+static const char *_activeDriverName = "SSD1683";
+static uint8_t _busyActiveLevel = HIGH;
 
 // ─── EpdDriver adapter ────────────────────────────────────────────────────
 class EpdDriver final : public IEpdDriver {
 public:
     void init(bool initialPowerOn) override {
         SPI.begin(PIN_EPD_SCK, PIN_EPD_MISO, PIN_EPD_MOSI, PIN_EPD_CS);
-        _display.init(115200, initialPowerOn);
+        gpio_hold_dis(static_cast<gpio_num_t>(PIN_EPD_RST));
+        selectDriver();
+#if EPD_DRIVER_MODE == 2
+        // Probe before normal rendering. In particular, never initialize an
+        // unknown panel as SSD1683 first: doing so can lock an SSD1619A panel
+        // with BUSY stuck LOW until its power is physically removed.
+        autoDetect();
+#else
+        initActive(initialPowerOn);
+#endif
     }
-    void hibernate() override { _display.hibernate(); }
-    void firstPage() override { _display.firstPage(); }
-    bool nextPage() override  { return _display.nextPage(); }
+
+    void hibernate() override { _activeDisplay->hibernate(); }
+    void firstPage() override { _activeDisplay->firstPage(); }
+    bool nextPage() override { return _activeDisplay->nextPage(); }
+
+private:
+    struct BusyProbe {
+        volatile bool run = false;
+        volatile uint32_t activeMs = 0;
+        volatile uint32_t idleMs = 0;
+        uint8_t activeLevel = HIGH;
+    };
+
+    static void busyProbeTask(void *arg) {
+        auto *probe = static_cast<BusyProbe *>(arg);
+        pinMode(PIN_EPD_BUSY, INPUT_PULLUP);
+        while (probe->run) {
+            if (digitalRead(PIN_EPD_BUSY) == probe->activeLevel) {
+                probe->activeMs = probe->activeMs + 1;
+            } else {
+                probe->idleMs = probe->idleMs + 1;
+            }
+            vTaskDelay(1);
+        }
+        vTaskDelete(nullptr);
+    }
+
+    static void primeControlPins() {
+        pinMode(PIN_EPD_CS, OUTPUT);
+        digitalWrite(PIN_EPD_CS, HIGH);
+        pinMode(PIN_EPD_DC, OUTPUT);
+        digitalWrite(PIN_EPD_DC, HIGH);
+        pinMode(PIN_EPD_RST, OUTPUT);
+        digitalWrite(PIN_EPD_RST, HIGH);
+        pinMode(PIN_EPD_BUSY, INPUT_PULLUP);
+    }
+
+    static void initActive(bool initialPowerOn) {
+        primeControlPins();
+        _activeDisplay->init(115200, initialPowerOn, 2, false);
+        _activeDisplay->setRotation(0);
+    }
+
+    static void activateDriver(uint8_t id) {
+        switch (id) {
+        case 1:
+            _activeDisplay = &_uc8179;
+            _activeDriverName = "UC8179";
+            _busyActiveLevel = LOW;
+            break;
+        case 5:
+            _activeDisplay = &_ssd1619a;
+            _activeDriverName = "SSD1619A";
+            _busyActiveLevel = HIGH;
+            break;
+        default:
+            _activeDisplay = &_ssd1683;
+            _activeDriverName = "SSD1683";
+            _busyActiveLevel = HIGH;
+            break;
+        }
+    }
+
+    static bool detectUcFamily() {
+        // Only narrow the candidate order here. Do not pulse RST: a short reset
+        // can leave SSD1619A unready and make every subsequent probe fail.
+        pinMode(PIN_EPD_BUSY, INPUT_PULLUP);
+        delay(2);
+        uint8_t lowCount = 0;
+        uint8_t highCount = 0;
+        int16_t firstLowAt = -1;
+        for (uint8_t i = 0; i < 80; ++i) {
+            if (digitalRead(PIN_EPD_BUSY) == LOW) {
+                ++lowCount;
+                if (firstLowAt < 0) firstLowAt = i;
+            } else {
+                ++highCount;
+            }
+            delay(1);
+        }
+        const bool ucFamily = lowCount < 12;
+        Serial.printf("[EPDDetect] BUSY low=%u high=%u firstLow=%d => %s family\n",
+                      lowCount, highCount, firstLowAt, ucFamily ? "UC" : "SSD");
+        return ucFamily;
+    }
+
+    static void selectDriver() {
+#if EPD_DRIVER_MODE == 2
+        const bool ucFamily = detectUcFamily();
+        activateDriver(ucFamily ? 1 : 0);
+        Serial.printf("[EPDDetect] mode=AUTO family=%s\n", ucFamily ? "UC" : "SSD");
+#else
+        activateDriver(EPD_DRIVER_MODE);
+        Serial.printf("[EPDDetect] mode=FORCE_%s\n", _activeDriverName);
+#endif
+        Serial.flush();
+    }
+
+    static bool probeDriver(uint8_t id, uint32_t &activeMs, uint32_t &idleMs) {
+        activateDriver(id);
+        // GxEPD2::init() performs the reset pulse. A second manual reset here
+        // can leave the controller unready and reject even the correct driver.
+        initActive(true);
+
+        BusyProbe probe;
+        probe.run = true;
+        probe.activeLevel = _busyActiveLevel;
+        xTaskCreatePinnedToCore(busyProbeTask, "epdBusy", 2048, &probe, 1, nullptr, 0);
+
+        _activeDisplay->setFullWindow();
+        _activeDisplay->firstPage();
+        do {
+            // A blank full refresh is sufficient for BUSY validation. Driver
+            // detection details are reported over serial only.
+            _activeDisplay->fillScreen(GxEPD_WHITE);
+        } while (_activeDisplay->nextPage());
+
+        probe.run = false;
+        delay(5);
+        activeMs = probe.activeMs;
+        idleMs = probe.idleMs;
+        // A correct tri-color full refresh is active for several seconds and
+        // then releases BUSY. Requiring both phases rejects wrong drivers and
+        // a floating BUSY pin stuck at either level.
+        return activeMs >= 3000 && idleMs >= 20;
+    }
+
+    static void autoDetect() {
+        // Safety-first order: SSD1683 must be last because its init can lock an
+        // SSD1619A panel until power-off. UC8179 and SSD1619A probes are safe.
+        static constexpr uint8_t SSD_FAMILY[] = {5, 1, 0};
+        static constexpr uint8_t UC_FAMILY[] = {1, 5, 0};
+        const bool ucFamily = _activeDisplay == &_uc8179;
+        const uint8_t *candidates = ucFamily ? UC_FAMILY : SSD_FAMILY;
+
+        for (uint8_t i = 0; i < sizeof(UC_FAMILY); ++i) {
+            uint32_t activeMs = 0;
+            uint32_t idleMs = 0;
+            const bool ok = probeDriver(candidates[i], activeMs, idleMs);
+            Serial.printf("[EPDDetect] %-8s busy=%lums idle=%lums => %s\n",
+                          _activeDriverName, static_cast<unsigned long>(activeMs),
+                          static_cast<unsigned long>(idleMs), ok ? "CONFIRMED" : "rejected");
+            if (ok) {
+                Serial.printf("[EPDDetect] selected %s\n", _activeDriverName);
+                Serial.flush();
+                return;
+            }
+        }
+
+        // Preserve the historical default if detection is inconclusive.
+        Serial.println("[EPDDetect] WARNING: no candidate confirmed; using SSD1683");
+        activateDriver(0);
+        initActive(true);
+        Serial.flush();
+    }
 };
 
 // ─── Board implementation ─────────────────────────────────────────────────
@@ -105,7 +290,7 @@ public:
     }
 
     IEpdDriver   &epd()          override { return _epd; }
-    Adafruit_GFX &gfx()          override { return _display; }
+    Adafruit_GFX &gfx()          override { return *_activeDisplay; }
     uint16_t      dispWidth()  const override { return DISP_WIDTH; }
     uint16_t      dispHeight() const override { return DISP_HEIGHT; }
     uint16_t      colorBlack() const override { return GxEPD_BLACK; }
