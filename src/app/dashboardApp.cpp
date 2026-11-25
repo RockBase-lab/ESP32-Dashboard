@@ -1698,6 +1698,8 @@ DisplayPageState DashboardApp::_runInteractiveWindow(IBoard &board, PageManager 
     FocusHoldState focusHold;
     WakeCoordinator wakeCoordinator;
     while (true) {
+        // Фоновый реконнект: не блокирует обработку кнопок и не уводит в AP.
+        wifiReconnect::poll();
         const uint32_t nowMs = millis();
         WakeInputs wakeInput;
         wakeInput.currentState = PowerState::Interactive;
@@ -2019,12 +2021,23 @@ void DashboardApp::run() {
         log_i(TAG, "Focus Clock active startup: skipping WiFi connect and data sync");
     } else {
         if (!_connectAndSync(board, wifi, cfg)) {
-        log_w(TAG, "WiFi failed — entering AP mode for recovery");
-            _enterApMode(board); // never returns after kApTimeoutMs
-            return;
+            if (cfg.wifiSsid.length() == 0 && cfg.wifiSsid2.length() == 0) {
+                log_w(TAG, "WiFi not configured — entering AP mode");
+                _enterApMode(board);
+                return;
+            }
+            // Сеть временно недоступна: НЕ блокируем интерфейс AP-режимом.
+            // Реконнект к основной/резервной точке пойдёт в фоне в цикле кнопок.
+            log_w(TAG, "WiFi unavailable — background reconnect started");
+            wifiReconnect::configure(cfg.wifiSsid, cfg.wifiPassword,
+                                     cfg.wifiSsid2, cfg.wifiPassword2);
+            wifiReconnect::start();
+            dataOk = false;   // рисуем fallback, пока сеть не вернётся
+        } else {
+            wifiReconnect::configure(cfg.wifiSsid, cfg.wifiPassword,
+                                     cfg.wifiSsid2, cfg.wifiPassword2);
+            dataOk = _fetchData(board, weather, cfg, localIP, syncReq.weather);
         }
-
-        dataOk = _fetchData(board, weather, cfg, localIP, syncReq.weather);
     }
 
     // Раньше при неудаче погоды уходили в сон, не отрисовав ничего — экран

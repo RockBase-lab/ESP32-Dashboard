@@ -15,6 +15,8 @@ struct AppConfig {
     // WiFi
     String wifiSsid;
     String wifiPassword;
+    String wifiSsid2;      // резервная точка доступа
+    String wifiPassword2;
 
     // Location (used to build Open-Meteo request URLs — no API key required)
     String lat;

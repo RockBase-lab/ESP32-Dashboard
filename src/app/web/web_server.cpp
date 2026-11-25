@@ -51,6 +51,8 @@ static String configToJson(const AppConfig &cfg) {
     doc["Board"]                = getBoard().boardName();
     doc[NVS_KEY_WIFI_SSID]      = cfg.wifiSsid;
     doc[NVS_KEY_WIFI_PASSWORD]  = "";
+    doc[NVS_KEY_WIFI_SSID2]     = cfg.wifiSsid2;
+    doc[NVS_KEY_WIFI_PASSWORD2] = "";
     doc[NVS_KEY_LAT]            = cfg.lat;
     doc[NVS_KEY_LON]            = cfg.lon;
     doc[NVS_KEY_CITY]           = cfg.city;
@@ -606,6 +608,14 @@ static bool applyPatch(const String &body) {
         if (!pwdVar.isNull()) {
             String pwd = pwdVar.as<String>();
             if (pwd.length() > 0) cfg.wifiPassword = pwd;
+        }
+    }
+    tryStr(NVS_KEY_WIFI_SSID2,    cfg.wifiSsid2);
+    {
+        JsonVariantConst pwdVar = obj[NVS_KEY_WIFI_PASSWORD2];
+        if (!pwdVar.isNull()) {
+            String pwd = pwdVar.as<String>();
+            if (pwd.length() > 0) cfg.wifiPassword2 = pwd;
         }
     }
     tryStr(NVS_KEY_LAT,           cfg.lat);

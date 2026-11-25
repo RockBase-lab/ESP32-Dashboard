@@ -179,6 +179,8 @@ void loadAppConfig(AppConfig &cfg) {
 
     cfg.wifiSsid      = s.GetString(NVS_KEY_WIFI_SSID,       DEFAULT_WIFI_SSID);
     cfg.wifiPassword  = s.GetString(NVS_KEY_WIFI_PASSWORD,   DEFAULT_WIFI_PASSWORD);
+    cfg.wifiSsid2     = s.GetString(NVS_KEY_WIFI_SSID2,      DEFAULT_WIFI_SSID2);
+    cfg.wifiPassword2 = s.GetString(NVS_KEY_WIFI_PASSWORD2,  DEFAULT_WIFI_PASSWORD2);
     cfg.lat           = s.GetString(NVS_KEY_LAT,             DEFAULT_LAT);
     cfg.lon           = s.GetString(NVS_KEY_LON,             DEFAULT_LON);
     cfg.city          = s.GetString(NVS_KEY_CITY,            DEFAULT_CITY);
@@ -248,6 +250,8 @@ void saveAppConfig(const AppConfig &cfg) {
 
     s.SetString(NVS_KEY_WIFI_SSID,      cfg.wifiSsid);
     s.SetString(NVS_KEY_WIFI_PASSWORD,  cfg.wifiPassword);
+    s.SetString(NVS_KEY_WIFI_SSID2,     cfg.wifiSsid2);
+    s.SetString(NVS_KEY_WIFI_PASSWORD2, cfg.wifiPassword2);
     s.SetString(NVS_KEY_LAT,            cfg.lat);
     s.SetString(NVS_KEY_LON,            cfg.lon);
     s.SetString(NVS_KEY_CITY,           cfg.city);

@@ -338,7 +338,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--rb-primary); box
       <div class="actions"><button class="btn primary" onclick="saveDevice()">Save Device</button></div>
     </div>
     <div class="grid">
-      <div class="panel span-6"><div class="panel-head"><div class="panel-title">WiFi</div></div><div class="panel-body form-grid"><label>SSID</label><input id="d_WifiSSID"><label>Password</label><input id="d_WifiPSWD" type="password" placeholder="Leave unchanged"></div></div>
+      <div class="panel span-6"><div class="panel-head"><div class="panel-title">WiFi (primary / backup)</div></div><div class="panel-body form-grid"><label>Primary SSID</label><input id="d_WifiSSID"><label>Primary password</label><input id="d_WifiPSWD" type="password" placeholder="Leave unchanged"><label>Backup SSID</label><input id="d_WifiSSID2" placeholder="Optional"><label>Backup password</label><input id="d_WifiPSWD2" type="password" placeholder="Leave unchanged"><div class="field-note">The backup network is tried only when the primary one fails. Leave its SSID empty to disable it.</div></div></div>
       <div class="panel span-6"><div class="panel-head"><div class="panel-title">Schedule</div></div><div class="panel-body form-grid"><label>Refresh minutes</label><input id="d_SleepMin" type="number" min="1"><label>Bed hour</label><input id="d_BedTime" type="number" min="0" max="23"><label>Wake hour</label><input id="d_WakeTime" type="number" min="0" max="23"><label>Config window sec</label><input id="d_PortalSec" type="number" min="0" max="600"></div></div>
       <div class="panel span-6"><div class="panel-head"><div class="panel-title">Display</div></div><div class="panel-body form-grid"><label>Time format</label><select id="d_TimeFmt"><option value="%H:%M">24-hour</option><option value="%I:%M %p">12-hour</option></select><label>Date format</label><select id="d_DateFmt"><option value="%a, %B %e">Mon, July 20</option><option value="%Y/%m/%d">2026/07/20</option><option value="%Y-%m-%d">2026-07-20</option></select><label>Language</label><select id="d_Language"><option value="en_US">English</option><option value="zh_CN">Chinese</option></select></div></div>
       <div class="panel span-6"><div class="panel-head"><div class="panel-title">Units</div></div><div class="panel-body form-grid"><label>Temperature</label><select id="d_UnitsTemp"><option value="C">Celsius</option><option value="F">Fahrenheit</option></select><div class="field-note">Applies to Weather Home, Weather Today, Weekly Weather, and Indoor Climate / 同步所有温度页面。</div><label>Pressure</label><select id="d_UnitsPres"><option value="hPa">hPa</option><option value="inHg">inHg</option><option value="mmHg">mmHg</option></select><label>Distance</label><select id="d_UnitsDist"><option value="km">km</option><option value="mi">miles</option></select></div></div>
@@ -623,7 +623,9 @@ function loadConfig() {
     var brandSub = $('brandSub');
     if (brandSub) brandSub.textContent = setupLine;
     setVal('d_WifiSSID', cfg.WifiSSID);
+    setVal('d_WifiSSID2', cfg.WifiSSID2);
     setVal('d_WifiPSWD', '');
+    setVal('d_WifiPSWD2', '');
     setVal('d_SleepMin', cfg.SleepMin);
     setVal('d_BedTime', cfg.BedTime);
     setVal('d_WakeTime', cfg.WakeTime);
@@ -792,11 +794,12 @@ function syncNow() {
 }
 function saveDevice() {
   var data = {
-    WifiSSID:getVal('d_WifiSSID'), SleepMin:parseInt(getVal('d_SleepMin'),10)||30, BedTime:parseInt(getVal('d_BedTime'),10)||0,
+    WifiSSID:getVal('d_WifiSSID'), WifiSSID2:getVal('d_WifiSSID2'), SleepMin:parseInt(getVal('d_SleepMin'),10)||30, BedTime:parseInt(getVal('d_BedTime'),10)||0,
     WakeTime:parseInt(getVal('d_WakeTime'),10)||6, PortalSec:parseInt(getVal('d_PortalSec'),10)||0, TimeFmt:getVal('d_TimeFmt'),
     DateFmt:getVal('d_DateFmt'), Language:getVal('d_Language'), UnitsTemp:getVal('d_UnitsTemp'), UnitsPres:getVal('d_UnitsPres'), UnitsDist:getVal('d_UnitsDist')
   };
   var pwd = getVal('d_WifiPSWD'); if (pwd) data.WifiPSWD = pwd;
+  var pwd2 = getVal('d_WifiPSWD2'); if (pwd2) data.WifiPSWD2 = pwd2;
   // Timezone: write both the IANA ID (page chrome / world clock) and the
   // whole-hour UTC offset (device clock sync) so the two never diverge.
   // The value must resolve on the DEVICE — validate against the mirrored

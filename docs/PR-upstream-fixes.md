@@ -16,14 +16,27 @@
 - `src/app/config/nvs_table.h` — `NtpServer` and `WthModel` keys and defaults.
 - `src/app/dashboardApp.cpp` — `cfg.lat` / `cfg.lon` are passed to `syncTime()`.
 
-## 2. Blank page on data errors
+## 2. Backup WiFi access point
+
+- `src/app/config/nvs_table.h`, `app_config.h/.cpp` — new settings `WifiSSID2` /
+  `WifiPSWD2` (backup network; empty by default).
+- `src/app/web/web_server.cpp`, `src/html/index.html` — **Primary / Backup WiFi**
+  fields in the portal; an empty backup password keeps the stored one, and the
+  password never appears in JSON or logs.
+- `src/app/dashboardApp.cpp` — `wifiReconnect::configure()` receives both networks.
+  If the primary network is temporarily unavailable, the device no longer enters
+  AP mode and blocks the UI: it renders the fallback page, starts a background
+  reconnect (primary, then backup once), and `wifiReconnect::poll()` runs in the
+  interactive button loop. AP mode is used only when neither SSID is configured.
+
+## 3. Blank page on data errors
 
 Previously, when `!dataOk` (`_fetchData()` returned false), the device went
 straight to deep sleep without rendering anything — the panel stayed blank white
 after EPD auto-detection. Now the warning is logged and the normal page is
 rendered with fallback data (`--` instead of fabricated values).
 
-## 3. Alternative Open-Meteo servers
+## 4. Alternative Open-Meteo servers
 
 - `src/app/weather/weather.cpp/.h`
   - `FORECAST_ENDPOINTS` / `AQI_ENDPOINTS` tables: canonical host plus alternative IPs;
@@ -33,7 +46,7 @@ rendered with fallback data (`--` instead of fabricated values).
     large body cannot push out MQTT/HTTPS state.
 - Requests switched to HTTPS.
 
-## 4. Open-Meteo weather model selection
+## 5. Open-Meteo weather model selection
 
 - New configuration field `weatherModel` (`WthModel`), default `ecmwf_ifs025`.
 - `src/app/web/web_config_validation.cpp/.h` — model whitelist:
@@ -43,7 +56,7 @@ rendered with fallback data (`--` instead of fabricated values).
 - `src/html/index.html` — **Weather model** dropdown in the Weather section.
 - `src/app/dashboardApp.cpp` — `weather.fetchWeather(lat, lon, cfg.weatherModel)`.
 
-## 5. AHT20 sensor and related issues
+## 6. AHT20 sensor and related issues
 
 - `src/app/dashboardApp.cpp`
   - the sensor is powered only on the Weather Home page and only once every

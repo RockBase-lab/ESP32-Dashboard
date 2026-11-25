@@ -6,6 +6,8 @@
 // ─── NVS key constants ────────────────────────────────────────────────────
 #define NVS_KEY_WIFI_SSID        "WifiSSID"
 #define NVS_KEY_WIFI_PASSWORD    "WifiPSWD"
+#define NVS_KEY_WIFI_SSID2       "WifiSSID2"     // резервная точка доступа
+#define NVS_KEY_WIFI_PASSWORD2   "WifiPSWD2"
 #define NVS_KEY_LAT              "Lat"
 #define NVS_KEY_LON              "Lon"
 #define NVS_KEY_CITY             "City"
@@ -54,6 +56,8 @@
 // power-up before any configuration. Overridden by NVS once the user saves.
 #define DEFAULT_WIFI_SSID        "RockBase_2.4G"
 #define DEFAULT_WIFI_PASSWORD    "NMMiner2048"
+#define DEFAULT_WIFI_SSID2       ""               // резервная сеть не задана
+#define DEFAULT_WIFI_PASSWORD2   ""
 #define DEFAULT_LAT              "30.6667"
 #define DEFAULT_LON              "104.0667"
 #define DEFAULT_CITY             "Chengdu, Sichuan, China"
