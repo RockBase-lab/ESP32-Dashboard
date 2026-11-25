@@ -250,6 +250,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--rb-primary); box
           <label>Latitude</label><input id="w_Lat" placeholder="30.6667">
           <div class="field-note">Default available / 有默认值；用于天气预报定位。</div>
           <label>Longitude</label><input id="w_Lon" placeholder="104.0667">
+          <label>Weather model</label><select id="w_WthModel">
+            <option value="ecmwf_ifs025">ECMWF IFS 0.25° (default)</option>
+            <option value="ecmwf_ifs04">ECMWF IFS 0.4°</option>
+            <option value="best_match">Best match (Open-Meteo)</option>
+            <option value="gfs_seamless">GFS seamless</option>
+            <option value="icon_seamless">ICON seamless</option>
+          </select>
           <div class="field-note">Default available / 有默认值；用于天气预报定位。</div>
           <label>Temperature</label><select id="w_UnitsTemp"><option value="C">Celsius</option><option value="F">Fahrenheit</option></select>
           <label>Wind</label><select id="w_UnitsSpeed"><option value="kmh">km/h</option><option value="mph">mph</option><option value="ms">m/s</option><option value="kn">knots</option></select>
@@ -731,7 +738,7 @@ function sourceConfigured(name) {
 }
 function fillSources() {
   var w = state.sources.weather || {};
-  setVal('w_City', w.City); setVal('w_Lat', w.Lat); setVal('w_Lon', w.Lon); setVal('w_UnitsTemp', w.UnitsTemp); setVal('w_UnitsSpeed', w.UnitsSpeed); setVal('w_UnitsPrecip', w.UnitsPrecip);
+  setVal('w_City', w.City); setVal('w_Lat', w.Lat); setVal('w_Lon', w.Lon); setVal('w_WthModel', w.WthModel || 'ecmwf_ifs025'); setVal('w_UnitsTemp', w.UnitsTemp); setVal('w_UnitsSpeed', w.UnitsSpeed); setVal('w_UnitsPrecip', w.UnitsPrecip);
   var c = state.sources.calendar || {};
   var first = c.sources && c.sources[0];
   if (first) {
@@ -755,7 +762,7 @@ function fillSources() {
   var i = state.sources.indoor || {}; setVal('i_enabled', i.enabled ? 'true' : 'false'); setVal('i_room', i.room);
 }
 function sourceBody(name) {
-  if (name === 'weather') return { City:getVal('w_City'), Lat:getVal('w_Lat'), Lon:getVal('w_Lon'), UnitsTemp:getVal('w_UnitsTemp'), UnitsSpeed:getVal('w_UnitsSpeed'), UnitsPrecip:getVal('w_UnitsPrecip') };
+  if (name === 'weather') return { City:getVal('w_City'), Lat:getVal('w_Lat'), Lon:getVal('w_Lon'), WthModel:getVal('w_WthModel'), UnitsTemp:getVal('w_UnitsTemp'), UnitsSpeed:getVal('w_UnitsSpeed'), UnitsPrecip:getVal('w_UnitsPrecip') };
   if (name === 'calendar') return { index:0, alias:getVal('c_alias'), url:getVal('c_url'), apiKey:getVal('c_apiKey'), enabled:getVal('c_enabled') === 'true', color:0 };
   if (name === 'news') return { feeds:getVal('n_feeds') };
   if (name === 'finance') return { symbols:getVal('f_symbols') };

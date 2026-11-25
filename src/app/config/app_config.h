@@ -20,6 +20,7 @@ struct AppConfig {
     String lat;
     String lon;
     String city;
+    String weatherModel; // "ecmwf_ifs025" / "best_match" / "gfs_seamless" / ...
 
     // Time
     int      utcOffset;    // UTC offset in hours, e.g. 8 = UTC+8, -5 = UTC-5

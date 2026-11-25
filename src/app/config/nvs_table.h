@@ -9,6 +9,8 @@
 #define NVS_KEY_LAT              "Lat"
 #define NVS_KEY_LON              "Lon"
 #define NVS_KEY_CITY             "City"
+#define NVS_KEY_WEATHER_MODEL    "WthModel"     // модель Open-Meteo (models=)
+#define NVS_KEY_NTP_SERVER       "NtpServer"    // последний удачно отработавший NTP
 #define NVS_KEY_TIMEZONE         "Timezone"
 #define NVS_KEY_SLEEP_DURATION   "SleepMin"
 #define NVS_KEY_BED_TIME         "BedTime"
@@ -55,6 +57,8 @@
 #define DEFAULT_LAT              "30.6667"
 #define DEFAULT_LON              "104.0667"
 #define DEFAULT_CITY             "Chengdu, Sichuan, China"
+#define DEFAULT_WEATHER_MODEL    "ecmwf_ifs025"   // ECMWF IFS 0.25°
+#define DEFAULT_NTP_SERVER       ""
 #define DEFAULT_UTC_OFFSET       8        // UTC+8 (China Standard Time)
 #define DEFAULT_SLEEP_DURATION   30       // minutes
 #define DEFAULT_BED_TIME         0        // hour (24-h)

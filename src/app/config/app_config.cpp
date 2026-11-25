@@ -182,6 +182,7 @@ void loadAppConfig(AppConfig &cfg) {
     cfg.lat           = s.GetString(NVS_KEY_LAT,             DEFAULT_LAT);
     cfg.lon           = s.GetString(NVS_KEY_LON,             DEFAULT_LON);
     cfg.city          = s.GetString(NVS_KEY_CITY,            DEFAULT_CITY);
+    cfg.weatherModel  = s.GetString(NVS_KEY_WEATHER_MODEL,   DEFAULT_WEATHER_MODEL);
     cfg.utcOffset     = s.GetI32   (NVS_KEY_TIMEZONE,        DEFAULT_UTC_OFFSET);
     cfg.timeFormat    = s.GetString(NVS_KEY_TIME_FORMAT,     DEFAULT_TIME_FORMAT);
     cfg.dateFormat    = s.GetString(NVS_KEY_DATE_FORMAT,     DEFAULT_DATE_FORMAT);
@@ -250,6 +251,7 @@ void saveAppConfig(const AppConfig &cfg) {
     s.SetString(NVS_KEY_LAT,            cfg.lat);
     s.SetString(NVS_KEY_LON,            cfg.lon);
     s.SetString(NVS_KEY_CITY,           cfg.city);
+    s.SetString(NVS_KEY_WEATHER_MODEL,  cfg.weatherModel);
     s.SetI32   (NVS_KEY_TIMEZONE,       cfg.utcOffset);
     s.SetString(NVS_KEY_TIME_FORMAT,    cfg.timeFormat);
     s.SetString(NVS_KEY_DATE_FORMAT,    cfg.dateFormat);

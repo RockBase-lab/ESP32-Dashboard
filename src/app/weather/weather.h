@@ -11,8 +11,9 @@ bool parseWeatherResponseBody(const String &body, WeatherData &weather);
 class WeatherClass {
 public:
     // Fetch current / hourly / daily weather from api.open-meteo.com.
+    // model — значение параметра models= (по умолчанию ECMWF IFS 0.25°).
     // Returns true on success.
-    bool fetchWeather(double lat, double lon);
+    bool fetchWeather(double lat, double lon, const String &model = "ecmwf_ifs025");
 
     // Fetch air quality data from air-quality-api.open-meteo.com.
     // Returns true on success.
