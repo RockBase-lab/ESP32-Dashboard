@@ -36,6 +36,22 @@ bool isSafeDashboardUrl(const std::string &url) {
     return normalizeCalendarSourceUrl(url).ok;
 }
 
+bool isAllowedWeatherModel(const std::string &model) {
+    static const char *const kModels[] = {
+        "best_match", "ecmwf_ifs025", "ecmwf_ifs04",
+        "gfs_seamless", "gfs_global", "icon_seamless", "icon_global",
+        "meteofrance_seamless", "jma_seamless",
+    };
+    for (const char *candidate : kModels) {
+        if (model == candidate) return true;
+    }
+    return false;
+}
+
+std::string normalizeWeatherModel(const std::string &model) {
+    return isAllowedWeatherModel(model) ? model : std::string("ecmwf_ifs025");
+}
+
 uint16_t normalizePortalWindowSec(int32_t seconds) {
     if (seconds <= 0) {
         return 0;

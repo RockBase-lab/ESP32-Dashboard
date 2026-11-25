@@ -71,8 +71,18 @@ RTC_DATA_ATTR bool    DashboardApp::_apMode    = false;
 RTC_DATA_ATTR bool    DashboardApp::_restorePersistedPage = false;
 RTC_DATA_ATTR ButtonAction DashboardApp::_lastButtonAction = ButtonAction::None;
 RTC_DATA_ATTR FocusClockRuntimeState DashboardApp::_focusClockState;
+RTC_DATA_ATTR static int64_t s_lastIndoorReadUtc = 0;
 
 namespace {
+// AHT20 внутри корпуса греется от платы: опрашиваем редко и только на Weather Home.
+// Питание подаётся лишь на время чтения — см. _readIndoorSensor().
+#ifndef ENABLE_INDOOR_SENSOR
+#define ENABLE_INDOOR_SENSOR 1
+#endif
+static constexpr int64_t kIndoorReadIntervalMinutes = 15;
+static float   g_indoorTemp = NAN;
+static float   g_indoorHumi = NAN;
+static int64_t g_indoorLastReadUtc = 0;
 #if defined(UI_LAYOUT_EPD_400x300)
 FinancePageSnapshot gFinanceSnapshot;
 NewsPageSnapshot gNewsSnapshot;
@@ -1193,7 +1203,7 @@ bool DashboardApp::_connectAndSync(IBoard &board, WifiManager &wifi, const AppCo
         return false;
     }
     log_i(TAG, "WiFi connected, syncing time (UTC%+d)", cfg.utcOffset);
-    wifi.syncTime(cfg.utcOffset);
+    wifi.syncTime(cfg.utcOffset, atof(cfg.lat.c_str()), atof(cfg.lon.c_str()));
     return true;
 }
 
@@ -1215,7 +1225,7 @@ bool DashboardApp::_fetchData(IBoard &board, WeatherClass &weather,
     double lon = cfg.lon.toDouble();
     log_i(TAG, "Fetching weather: lat=%.4f lon=%.4f", lat, lon);
 
-    bool weatherOk = weather.fetchWeather(lat, lon);
+    bool weatherOk = weather.fetchWeather(lat, lon, cfg.weatherModel);
     log_i(TAG, "Weather fetch: %s", weatherOk ? "OK" : "FAILED");
 
     if (weatherOk) {
@@ -1259,15 +1269,35 @@ void DashboardApp::_renderWeather(IBoard &board, WeatherClass &weather,
     // user turned Indoor Climate off in the web config, while "read failed"
     // means the sensor was probed and did not answer. Both render as "--", so
     // without these lines the two are indistinguishable from the panel alone.
-    float indoorTemp = NAN, indoorHumi = NAN;
+#if ENABLE_INDOOR_SENSOR
     if (!cfg.indoorSensorEnabled) {
         log_i(TAG, "Indoor: skipped (Indoor Climate disabled in config)");
-    } else if (_readIndoorSensor(board, indoorTemp, indoorHumi)) {
-        log_i(TAG, "Indoor: %.1fdegC  %.0f%%", indoorTemp, indoorHumi);
-        page.setIndoorData(indoorTemp, indoorHumi);
     } else {
-        log_e(TAG, "Indoor: unavailable (sensor absent or read failed)");
+        const int64_t now = static_cast<int64_t>(time(nullptr));
+        const bool due = g_indoorLastReadUtc == 0 ||
+                         (now - g_indoorLastReadUtc) >= kIndoorReadIntervalMinutes * 60;
+        if (due) {
+            float t = NAN, h = NAN;
+            if (_readIndoorSensor(board, t, h)) {
+                g_indoorTemp = t;
+                g_indoorHumi = h;
+                g_indoorLastReadUtc = now;
+                s_lastIndoorReadUtc = now;
+                log_i(TAG, "Indoor: %.1fdegC  %.0f%%", t, h);
+            } else {
+                log_w(TAG, "Indoor: read failed, keeping cached value");
+                g_indoorLastReadUtc = now;   // не дёргаем датчик после неудачи
+            }
+        } else {
+            log_i(TAG, "Indoor: cached (next read in %d min)",
+                  static_cast<int>(kIndoorReadIntervalMinutes -
+                                   (now - g_indoorLastReadUtc) / 60));
+        }
+        if (!isnan(g_indoorTemp)) page.setIndoorData(g_indoorTemp, g_indoorHumi);
     }
+#else
+    (void)cfg;
+#endif
 
     board.epd().firstPage();
     do { page.draw(); } while (board.epd().nextPage());
@@ -1668,6 +1698,8 @@ DisplayPageState DashboardApp::_runInteractiveWindow(IBoard &board, PageManager 
     FocusHoldState focusHold;
     WakeCoordinator wakeCoordinator;
     while (true) {
+        // Фоновый реконнект: не блокирует обработку кнопок и не уводит в AP.
+        wifiReconnect::poll();
         const uint32_t nowMs = millis();
         WakeInputs wakeInput;
         wakeInput.currentState = PowerState::Interactive;
@@ -1989,22 +2021,29 @@ void DashboardApp::run() {
         log_i(TAG, "Focus Clock active startup: skipping WiFi connect and data sync");
     } else {
         if (!_connectAndSync(board, wifi, cfg)) {
-        log_w(TAG, "WiFi failed — entering AP mode for recovery");
-            _enterApMode(board); // never returns after kApTimeoutMs
-            return;
+            if (cfg.wifiSsid.length() == 0 && cfg.wifiSsid2.length() == 0) {
+                log_w(TAG, "WiFi not configured — entering AP mode");
+                _enterApMode(board);
+                return;
+            }
+            // Сеть временно недоступна: НЕ блокируем интерфейс AP-режимом.
+            // Реконнект к основной/резервной точке пойдёт в фоне в цикле кнопок.
+            log_w(TAG, "WiFi unavailable — background reconnect started");
+            wifiReconnect::configure(cfg.wifiSsid, cfg.wifiPassword,
+                                     cfg.wifiSsid2, cfg.wifiPassword2);
+            wifiReconnect::start();
+            dataOk = false;   // рисуем fallback, пока сеть не вернётся
+        } else {
+            wifiReconnect::configure(cfg.wifiSsid, cfg.wifiPassword,
+                                     cfg.wifiSsid2, cfg.wifiPassword2);
+            dataOk = _fetchData(board, weather, cfg, localIP, syncReq.weather);
         }
-
-        dataOk = _fetchData(board, weather, cfg, localIP, syncReq.weather);
     }
 
+    // Раньше при неудаче погоды уходили в сон, не отрисовав ничего — экран
+    // оставался белым после авто-детекта. Теперь рисуем fallback-страницу.
     if (!dataOk) {
-        wifi.disconnect();
-        log_i(TAG, "WiFi disconnected");
-        log_i(TAG, "Sleeping for %d minutes", cfg.sleepDuration);
-        _enterScheduledSleep(board,
-                             static_cast<uint64_t>(cfg.sleepDuration) * 60ULL * 1000000ULL,
-                             displayPage);
-        return;
+        log_w(TAG, "Weather data unavailable — rendering fallback page before sleep");
     }
 
     const RtcPageState previousRtcPageState = gDashboardRtcPageState;

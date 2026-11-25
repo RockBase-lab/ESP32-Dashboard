@@ -6,9 +6,13 @@
 // ─── NVS key constants ────────────────────────────────────────────────────
 #define NVS_KEY_WIFI_SSID        "WifiSSID"
 #define NVS_KEY_WIFI_PASSWORD    "WifiPSWD"
+#define NVS_KEY_WIFI_SSID2       "WifiSSID2"     // резервная точка доступа
+#define NVS_KEY_WIFI_PASSWORD2   "WifiPSWD2"
 #define NVS_KEY_LAT              "Lat"
 #define NVS_KEY_LON              "Lon"
 #define NVS_KEY_CITY             "City"
+#define NVS_KEY_WEATHER_MODEL    "WthModel"     // модель Open-Meteo (models=)
+#define NVS_KEY_NTP_SERVER       "NtpServer"    // последний удачно отработавший NTP
 #define NVS_KEY_TIMEZONE         "Timezone"
 #define NVS_KEY_SLEEP_DURATION   "SleepMin"
 #define NVS_KEY_BED_TIME         "BedTime"
@@ -52,9 +56,13 @@
 // power-up before any configuration. Overridden by NVS once the user saves.
 #define DEFAULT_WIFI_SSID        "RockBase_2.4G"
 #define DEFAULT_WIFI_PASSWORD    "NMMiner2048"
+#define DEFAULT_WIFI_SSID2       ""               // резервная сеть не задана
+#define DEFAULT_WIFI_PASSWORD2   ""
 #define DEFAULT_LAT              "30.6667"
 #define DEFAULT_LON              "104.0667"
 #define DEFAULT_CITY             "Chengdu, Sichuan, China"
+#define DEFAULT_WEATHER_MODEL    "ecmwf_ifs025"   // ECMWF IFS 0.25°
+#define DEFAULT_NTP_SERVER       ""
 #define DEFAULT_UTC_OFFSET       8        // UTC+8 (China Standard Time)
 #define DEFAULT_SLEEP_DURATION   30       // minutes
 #define DEFAULT_BED_TIME         0        // hour (24-h)

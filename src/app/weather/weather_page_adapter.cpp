@@ -52,15 +52,15 @@ WeatherPageSnapshot weatherFallbackPageSnapshot(const std::string &city,
     snapshot.updated = "Weather setup";
     snapshot.currentCondition = "No live data";
     snapshot.tempUnit = normalizedTempUnit(tempUnit);
-    snapshot.currentTempC = 22;
-    snapshot.feelsLikeC = 22;
+    snapshot.currentTempC = -999;   // "--": нет достоверных данных
+    snapshot.feelsLikeC = -999;
     snapshot.humidityPct = 0;
     snapshot.windKph = 0;
     snapshot.rainPct = 0;
     snapshot.pressureHpa = 0;
     snapshot.visibilityKm = 0;
-    snapshot.indoorTempC = 22;
-    snapshot.indoorHumidityPct = 0;
+    snapshot.indoorTempC = -999;
+    snapshot.indoorHumidityPct = -1;
     snapshot.hourly = {
         {"00", 20, 0},
         {"03", 19, 0},

@@ -2,6 +2,16 @@
 
 #include <Arduino.h>
 
+// Фоновый реконнект: вызывается из интерактивного цикла, никогда не блокирует
+// обработку кнопок. При потере основной сети сам переходит на резервную.
+namespace wifiReconnect {
+void configure(const String &primarySsid, const String &primaryPassword,
+               const String &backupSsid, const String &backupPassword);
+void start();
+bool connected();
+bool poll();   // true, если соединение только что восстановилось
+}
+
 // WifiManager — connect to an AP, sync time via SNTP, and disconnect.
 class WifiManager {
 public:
@@ -11,8 +21,9 @@ public:
 
     // Synchronize the system clock via SNTP.
     // utcOffsetHours is the UTC offset in hours, e.g. 8 for UTC+8, -5 for UTC-5.
+    // lat/lon (optional) pick the nearest regional NTP pool first.
     // Falls back to HTTP time sources when all NTP (UDP) servers fail.
-    void syncTime(int utcOffsetHours);
+    void syncTime(int utcOffsetHours, double lat = 0.0, double lon = 0.0);
 
     // HTTP-based time sync for networks that block UDP/NTP.
     // Tries JSON time APIs first, then plain-HTTP Date headers.

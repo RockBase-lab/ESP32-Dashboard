@@ -51,9 +51,12 @@ static String configToJson(const AppConfig &cfg) {
     doc["Board"]                = getBoard().boardName();
     doc[NVS_KEY_WIFI_SSID]      = cfg.wifiSsid;
     doc[NVS_KEY_WIFI_PASSWORD]  = "";
+    doc[NVS_KEY_WIFI_SSID2]     = cfg.wifiSsid2;
+    doc[NVS_KEY_WIFI_PASSWORD2] = "";
     doc[NVS_KEY_LAT]            = cfg.lat;
     doc[NVS_KEY_LON]            = cfg.lon;
     doc[NVS_KEY_CITY]           = cfg.city;
+    doc[NVS_KEY_WEATHER_MODEL]  = cfg.weatherModel;
     doc[NVS_KEY_TIMEZONE]       = cfg.utcOffset;
     doc[NVS_KEY_SLEEP_DURATION] = cfg.sleepDuration;
     doc[NVS_KEY_BED_TIME]       = cfg.bedTime;
@@ -370,6 +373,7 @@ static void sendSourceResponse(AsyncWebServerRequest *req, const char *source) {
         doc[NVS_KEY_CITY] = cfg.city;
         doc[NVS_KEY_LAT] = cfg.lat;
         doc[NVS_KEY_LON] = cfg.lon;
+        doc[NVS_KEY_WEATHER_MODEL] = cfg.weatherModel;
         doc[NVS_KEY_UNITS_TEMP] = cfg.unitsTemp;
         doc[NVS_KEY_UNITS_SPEED] = cfg.unitsSpeed;
         doc[NVS_KEY_UNITS_PRECIP] = cfg.unitsPrecip;
@@ -521,6 +525,13 @@ static bool applySourcePatch(const char *source, const String &body) {
         putStr(NVS_KEY_CITY, cfg.city);
         putStr(NVS_KEY_LAT, cfg.lat);
         putStr(NVS_KEY_LON, cfg.lon);
+        {
+            JsonVariantConst model = obj[NVS_KEY_WEATHER_MODEL];
+            if (!model.isNull()) {
+                cfg.weatherModel =
+                    normalizeWeatherModel(model.as<std::string>()).c_str();
+            }
+        }
         putStr(NVS_KEY_UNITS_TEMP, cfg.unitsTemp);
         putStr(NVS_KEY_UNITS_SPEED, cfg.unitsSpeed);
         putStr(NVS_KEY_UNITS_PRECIP, cfg.unitsPrecip);
@@ -599,9 +610,24 @@ static bool applyPatch(const String &body) {
             if (pwd.length() > 0) cfg.wifiPassword = pwd;
         }
     }
+    tryStr(NVS_KEY_WIFI_SSID2,    cfg.wifiSsid2);
+    {
+        JsonVariantConst pwdVar = obj[NVS_KEY_WIFI_PASSWORD2];
+        if (!pwdVar.isNull()) {
+            String pwd = pwdVar.as<String>();
+            if (pwd.length() > 0) cfg.wifiPassword2 = pwd;
+        }
+    }
     tryStr(NVS_KEY_LAT,           cfg.lat);
     tryStr(NVS_KEY_LON,           cfg.lon);
     tryStr(NVS_KEY_CITY,          cfg.city);
+    {
+        JsonVariantConst modelVar = obj[NVS_KEY_WEATHER_MODEL];
+        if (!modelVar.isNull()) {
+            cfg.weatherModel =
+                normalizeWeatherModel(modelVar.as<std::string>()).c_str();
+        }
+    }
     tryInt(NVS_KEY_TIMEZONE,      cfg.utcOffset);
     tryInt(NVS_KEY_SLEEP_DURATION,cfg.sleepDuration);
     tryInt(NVS_KEY_BED_TIME,      cfg.bedTime);

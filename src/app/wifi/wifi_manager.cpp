@@ -3,7 +3,13 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <esp_sntp.h>
+#include <lwip/ip_addr.h>
 #include <sys/time.h>
+#include <algorithm>
+#include <cstring>
+#include <vector>
+#include "app/config/nvs_table.h"
+#include "app/config/settings.h"
 #include "utils/logger.h"
 
 static const char *TAG = "WifiManager";
@@ -15,6 +21,32 @@ static const int NTP_MAX_RETRIES       = 2;     // retries per server
 // HTTP so a UDP-blocking network does not stall the wake cycle for minutes.
 static const unsigned long NTP_TOTAL_BUDGET_MS = 30000;
 static const int HTTP_TIME_TIMEOUT_MS = 6000;   // per HTTP time source
+
+// Приоритет источников времени (побеждает первый успешный):
+// 1) сервер, полученный от DHCP (option 42) — его выдаёт сам роутер;
+// 2) российские публичные серверы (Яндекс и MSK-IX);
+// 3) пул OpenWrt;
+// 4) исторический список ниже (остальные страны и anycast).
+// DHCP-сервер читается до вызова configTime(), который перезаписывает слоты SNTP.
+static String s_dhcpNtpServer;
+RTC_DATA_ATTR static char s_lastNtpServer[64] = {0};  // last successful NTP, RTC
+
+// Рекомендованные Яндекс.Cloud для РФ + проверенные вручную (UDP/123, 21.11.2026).
+// ntp.yandex.ru / ntp1.yandex.ru не отвечают — удалены.
+static const char * const NTP_RUSSIAN[] = {
+    "ntp.msk-ix.ru",
+    "ntp.ix.ru",
+    "ntp2.vniiftri.ru",
+    "0.ru.pool.ntp.org",
+    "1.ru.pool.ntp.org",
+    "ntp0.NL.net",
+};
+
+static const char * const NTP_OPENWRT[] = {
+    "openwrt.pool.ntp.org",
+    "0.openwrt.pool.ntp.org",
+    "1.openwrt.pool.ntp.org",
+};
 
 // NTP server pool — tried in order, first success wins.
 static const char * const NTP_SERVERS[] = {
@@ -60,6 +92,49 @@ static const char * const NTP_SERVERS[] = {
 };
 static const uint8_t NTP_SERVER_CNT = sizeof(NTP_SERVERS) / sizeof(NTP_SERVERS[0]);
 
+// Региональные пулы: выбираются по координатам из конфигурации.
+static const char *const NTP_EUROPE[] = {
+    "europe.pool.ntp.org", "de.pool.ntp.org", "fr.pool.ntp.org",
+    "uk.pool.ntp.org", "ntp.se",
+};
+static const char *const NTP_ASIA[] = {
+    "asia.pool.ntp.org", "ntp.nict.jp", "ntp.aliyun.com", "ntp.tencent.com",
+};
+static const char *const NTP_NORTH_AMERICA[] = {
+    "north-america.pool.ntp.org", "us.pool.ntp.org", "time.google.com",
+};
+static const char *const NTP_SOUTH_AMERICA[] = {
+    "south-america.pool.ntp.org", "a.ntp.br",
+};
+static const char *const NTP_AFRICA[] = {
+    "africa.pool.ntp.org", "za.pool.ntp.org",
+};
+static const char *const NTP_OCEANIA[] = {
+    "oceania.pool.ntp.org", "au.pool.ntp.org",
+};
+
+enum class NtpRegion { Russia, Europe, Asia, NorthAmerica, SouthAmerica, Africa, Oceania, Global };
+
+NtpRegion ntpRegionForCoordinates(double lat, double lon) {
+    // Грубая географическая классификация: достаточно, чтобы первым шел
+    // ближайший пул, а остальные оставались запасными.
+    if (lat >= 45.0 && lat <= 75.0 && lon >= 20.0 && lon <= 180.0)
+        return NtpRegion::Russia;
+    if (lon >= -12.0 && lon <= 45.0 && lat >= 35.0 && lat <= 72.0)
+        return NtpRegion::Europe;
+    if (lat > 10.0 && lon >= -170.0 && lon <= -50.0)
+        return NtpRegion::NorthAmerica;
+    if (lat < 15.0 && lon >= -90.0 && lon <= -30.0)
+        return NtpRegion::SouthAmerica;
+    if (lat >= -35.0 && lat <= 35.0 && lon >= -20.0 && lon <= 55.0)
+        return NtpRegion::Africa;
+    if (lat < -10.0 && lon >= 110.0 && lon <= 180.0)
+        return NtpRegion::Oceania;
+    if (lon >= 40.0 && lon <= 150.0 && lat >= -10.0 && lat <= 60.0)
+        return NtpRegion::Asia;
+    return NtpRegion::Global;
+}
+
 // ─── HTTP time sources (fallback when UDP/NTP is blocked) ───────────────────
 // mode 0: JSON body contains "unixtime":<seconds>
 // mode 1: JSON body contains "t":"<milliseconds>"
@@ -77,8 +152,89 @@ static const HttpTimeSource HTTP_TIME_SOURCES[] = {
 };
 static const uint8_t HTTP_TIME_SRC_CNT = sizeof(HTTP_TIME_SOURCES) / sizeof(HTTP_TIME_SOURCES[0]);
 
-bool WifiManager::connect(const String &ssid, const String &password) {
+namespace wifiReconnect {
+namespace {
+String _primarySsid, _primaryPassword, _backupSsid, _backupPassword;
+String _currentSsid, _currentPassword;
+bool     _backupTried = false;
+bool     _active = false;
+bool     _justConnected = false;
+uint32_t _attemptStartMs = 0;
+
+void beginAttempt(const String &ssid, const String &password) {
+    if (ssid.length() == 0) return;
+    _currentSsid = ssid;
+    _currentPassword = password;
+    _active = true;
+    _attemptStartMs = millis();
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(ssid.c_str(), password.c_str());
+    log_i(TAG, "Background WiFi -> %s", ssid.c_str());
+}
+}  // namespace
+
+void configure(const String &primarySsid, const String &primaryPassword,
+               const String &backupSsid, const String &backupPassword) {
+    _primarySsid = primarySsid;
+    _primaryPassword = primaryPassword;
+    _backupSsid = backupSsid;
+    _backupPassword = backupPassword;
+}
+
+void start() {
+    _justConnected = false;
+    _backupTried = false;
+    _active = false;
+    beginAttempt(_primarySsid, _primaryPassword);
+}
+
+bool connected() {
+    return WiFi.status() == WL_CONNECTED;
+}
+
+bool poll() {
+    _justConnected = false;
+    if (connected()) {
+        const bool wasActive = _active;
+        _active = false;
+        if (wasActive) {
+            _justConnected = true;
+            log_i(TAG, "Background WiFi connected to %s", WiFi.SSID().c_str());
+            return true;
+        }
+        return false;
+    }
+    if (!_active) {
+        // Потеря соединения: начинаем с основной сети.
+        _backupTried = false;
+        beginAttempt(_primarySsid, _primaryPassword);
+        return false;
+    }
+    if (millis() - _attemptStartMs < CONNECT_TIMEOUT_MS) return false;
+
+    // Основная не поднялась — пробуем резервную один раз.
+    if (!_backupTried && _backupSsid.length() > 0) {
+        _backupTried = true;
+        beginAttempt(_backupSsid, _backupPassword);
+        return false;
+    }
+    _active = false;   // следующий poll начнёт новую попытку с основной сети
+    return false;
+}
+}  // namespace wifiReconnect
+
+bool WifiManager::connect(const String &ssid, const String &password) {
+    WiFi.mode(WIFI_STA);   // инициализирует LwIP/tcpip (Network.begin)
+
+#if LWIP_DHCP_GET_NTP_SRV
+    // Вызывать можно только после WiFi.mode(): иначе esp_sntp_servermode_dhcp()
+    // дёргает tcpip_callback() с ещё неготовым mbox и плата падает в assert.
+    // DHCP ещё не стартовал (начнётся после WiFi.begin + ассоциации), поэтому
+    // этой точки достаточно, чтобы получить сервер из option 42.
+    esp_sntp_servermode_dhcp(true);
+#endif
+
     WiFi.begin(ssid.c_str(), password.c_str());
     log_i(TAG, "Connecting to %s ...", ssid.c_str());
 
@@ -172,17 +328,91 @@ static void applyUtcEpoch(time_t epoch, long offsetSec) {
     settimeofday(&tv, nullptr);
 }
 
-void WifiManager::syncTime(int utcOffsetHours) {
+void WifiManager::syncTime(int utcOffsetHours, double lat, double lon) {
     long offsetSec = (long)utcOffsetHours * 3600L;
     const unsigned long ntpStart = millis();
 
-    for (uint8_t si = 0; si < NTP_SERVER_CNT; si++) {
+    // RTC теряется при перезагрузке — подтягиваем последний успешный сервер из NVS.
+    if (s_lastNtpServer[0] == '\0') {
+        Settings store(NVS_NAMESPACE_WEATHER);
+        const String saved = store.GetString(NVS_KEY_NTP_SERVER, DEFAULT_NTP_SERVER);
+        if (saved.length() > 0) {
+            strncpy(s_lastNtpServer, saved.c_str(), sizeof(s_lastNtpServer) - 1);
+            s_lastNtpServer[sizeof(s_lastNtpServer) - 1] = '\0';
+        }
+    }
+
+    // Сначала читаем DHCP option 42: configTime() ниже перезапишет слоты SNTP.
+    s_dhcpNtpServer.clear();
+    const ip_addr_t *dhcpAddr = esp_sntp_getserver(0);
+    // Router без option 42 оставляет в слоте 0.0.0.0 — пробовать его бессмысленно.
+    if (dhcpAddr != nullptr && IP_IS_V4(dhcpAddr) &&
+        dhcpAddr->u_addr.ip4.addr != 0 &&
+        dhcpAddr->u_addr.ip4.addr != 0xFFFFFFFFU) {
+        s_dhcpNtpServer = IPAddress(dhcpAddr->u_addr.ip4.addr).toString();
+    } else {
+        const char *dhcpName = esp_sntp_getservername(0);
+        if (dhcpName != nullptr && *dhcpName != '\0') {
+            s_dhcpNtpServer = dhcpName;
+        }
+    }
+    if (s_dhcpNtpServer.length()) {
+        log_i(TAG, "NTP from DHCP option 42: %s", s_dhcpNtpServer.c_str());
+    } else {
+        log_i(TAG, "DHCP did not provide an NTP server (option 42)");
+    }
+
+    std::vector<String> servers;
+    auto addServer = [&servers](const char *server) {
+        if (std::find(servers.begin(), servers.end(), String(server)) == servers.end())
+            servers.push_back(String(server));
+    };
+    // Прошлый успешный сервер и DHCP option 42 имеют наивысший приоритет.
+    if (s_lastNtpServer[0] != '\0') addServer(s_lastNtpServer);
+    if (s_dhcpNtpServer.length()) addServer(s_dhcpNtpServer.c_str());
+
+    // Далее — региональный пул по координатам из конфигурации.
+    const NtpRegion region = ntpRegionForCoordinates(lat, lon);
+    log_i(TAG, "NTP region for %.2f,%.2f: %d", lat, lon, static_cast<int>(region));
+    switch (region) {
+        case NtpRegion::Russia:
+            for (const char *s : NTP_RUSSIAN) addServer(s);
+            break;
+        case NtpRegion::Europe:
+            for (const char *s : NTP_EUROPE) addServer(s);
+            break;
+        case NtpRegion::Asia:
+            for (const char *s : NTP_ASIA) addServer(s);
+            break;
+        case NtpRegion::NorthAmerica:
+            for (const char *s : NTP_NORTH_AMERICA) addServer(s);
+            break;
+        case NtpRegion::SouthAmerica:
+            for (const char *s : NTP_SOUTH_AMERICA) addServer(s);
+            break;
+        case NtpRegion::Africa:
+            for (const char *s : NTP_AFRICA) addServer(s);
+            break;
+        case NtpRegion::Oceania:
+            for (const char *s : NTP_OCEANIA) addServer(s);
+            break;
+        case NtpRegion::Global:
+            break;
+    }
+    for (const char *s : NTP_OPENWRT) addServer(s);
+    for (uint8_t i = 0; i < NTP_SERVER_CNT; ++i) addServer(NTP_SERVERS[i]);
+
+    for (size_t si = 0; si < servers.size(); si++) {
         if (millis() - ntpStart >= NTP_TOTAL_BUDGET_MS) {
             log_w(TAG, "NTP time budget exhausted (%lu ms) — falling back to HTTP",
                   (unsigned long)NTP_TOTAL_BUDGET_MS);
             break;
         }
-        const char *server = NTP_SERVERS[si];
+        const char *server = servers[si].c_str();
+        if (si > 0 && s_lastNtpServer[0] != '\0' &&
+            strcmp(server, s_lastNtpServer) == 0) {
+            continue;   // уже пробывали первым
+        }
         log_i(TAG, "NTP trying: %s", server);
 
         esp_sntp_stop();
@@ -204,6 +434,12 @@ void WifiManager::syncTime(int utcOffsetHours) {
         if (synced) {
             struct tm tm_info;
             getLocalTime(&tm_info);
+            strncpy(s_lastNtpServer, server, sizeof(s_lastNtpServer) - 1);
+            s_lastNtpServer[sizeof(s_lastNtpServer) - 1] = '\0';
+            {
+                Settings store(NVS_NAMESPACE_WEATHER, true);
+                store.SetString(NVS_KEY_NTP_SERVER, s_lastNtpServer);
+            }
             log_i(TAG, "NTP synced via %s — %04d-%02d-%02d %02d:%02d:%02d (UTC%+d)",
                   server,
                   tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,

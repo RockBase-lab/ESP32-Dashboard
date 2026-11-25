@@ -7,6 +7,8 @@
 std::string redactKeyValueForLog(const std::string &key, const std::string &value);
 bool isAllowedRotationInterval(uint16_t minutes);
 bool isSafeDashboardUrl(const std::string &url);
+bool isAllowedWeatherModel(const std::string &model);
+std::string normalizeWeatherModel(const std::string &model);
 
 // Hard cap for the power-on config window (seconds).
 inline constexpr uint16_t kPortalWindowSecMax = 600;

@@ -1,70 +1,133 @@
 #include "weather.h"
 
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <cstring>
+#include "app/net/bounded_string_stream.h"
 #include "utils/logger.h"
 
 static const char *TAG = "Weather";
 
-bool WeatherClass::fetchWeather(double lat, double lon) {
-    // Build Open-Meteo request URL.
-    // Fixed SI units; the UI layer converts to user-selected units.
-    char url[640];
-    snprintf(url, sizeof(url),
-        "http://" WEATHER_API_HOST "/v1/forecast"
+namespace {
+struct ApiEndpoint {
+    const char *host;     // Host header, SNI и проверка сертификата
+    const char *address;  // IP или имя, к которому подключаемся
+};
+
+// Основной адрес api.open-meteo.com в РФ часто недоступен (таймаут по TCP).
+// Остальные серверы Open-Meteo отдают те же данные при том же Host/SNI.
+// Адреса проверены 19.11.2026; при изменении обновите таблицу.
+static const ApiEndpoint FORECAST_ENDPOINTS[] = {
+    {WEATHER_API_HOST, WEATHER_API_HOST},
+    {WEATHER_API_HOST, "5.9.98.12"},
+    {WEATHER_API_HOST, "178.63.121.29"},
+    {WEATHER_API_HOST, "138.199.128.119"},
+    {WEATHER_API_HOST, "188.114.97.1"},   // Cloudflare edge open-meteo.com
+};
+
+static const ApiEndpoint AQI_ENDPOINTS[] = {
+    {AQI_API_HOST, AQI_API_HOST},
+    {AQI_API_HOST, "152.53.84.73"},
+};
+
+String apiGet(const ApiEndpoint &endpoint, const String &uri) {
+    WiFiClientSecure client;
+    // CA-бандл в этом ядре не приклеивается к контексту TLS при прямом
+    // connect(IP, host, ...) — handshake падает с -30336. Погода — публичный
+    // read-only API, поэтому проверку цепочки отключаем (как в HOMEd-скрипте).
+    client.setInsecure();
+    client.setTimeout(WEATHER_HTTP_TIMEOUT / 1000U);
+    client.setHandshakeTimeout(WEATHER_HTTP_TIMEOUT);
+
+    bool connected = false;
+    if (strcmp(endpoint.address, endpoint.host) == 0) {
+        connected = client.connect(endpoint.host, 443);
+    } else {
+        // Подключаемся к резервному IP, но SNI и проверка сертификата — от
+        // канонического имени api.open-meteo.com.
+        IPAddress address;
+        if (address.fromString(endpoint.address)) {
+            connected = client.connect(address, 443, endpoint.host,
+                                       nullptr, nullptr, nullptr);
+        }
+    }
+    if (!connected) {
+        log_w(TAG, "Open-Meteo unreachable: %s (%s)", endpoint.host, endpoint.address);
+        return String();
+    }
+
+    const String url = String("https://") + endpoint.host + uri;
+    HTTPClient http;
+    http.setTimeout(WEATHER_HTTP_TIMEOUT);
+    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    http.setAcceptEncoding("identity");
+    if (!http.begin(client, url.c_str())) {
+        log_w(TAG, "HTTP begin failed for %s", endpoint.address);
+        return String();
+    }
+    const int code = http.GET();
+    if (code != 200) {
+        log_w(TAG, "HTTP %d for %s", code, endpoint.address);
+        http.end();
+        return String();
+    }
+    String body;
+    BoundedStringStream stream(body, 128UL * 1024UL);
+    http.writeToStream(&stream);
+    http.end();
+    return body;
+}
+}  // namespace
+
+bool WeatherClass::fetchWeather(double lat, double lon, const String &model) {
+    // Постоянные единицы СИ; перевод в выбранные пользователем единицы — в UI.
+    char uri[768];
+    snprintf(uri, sizeof(uri),
+        "/v1/forecast"
         "?latitude=%.4f&longitude=%.4f"
         "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
                   "wind_speed_10m,wind_direction_10m,surface_pressure,"
                   "weather_code,is_day,visibility,cloud_cover,precipitation"
         "&hourly=temperature_2m,weather_code,precipitation_probability,precipitation,relative_humidity_2m"
         "&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max"
-        "&forecast_hours=24&forecast_days=5&timezone=auto",
-        lat, lon);
+        "&forecast_hours=24&forecast_days=5&timezone=auto"
+        "&models=%s&language=ru",
+        lat, lon, model.c_str());
 
-    HTTPClient http;
-    http.begin(url);
-    http.setTimeout(WEATHER_HTTP_TIMEOUT);
-    int code = http.GET();
-    if (code != 200) {
-        log_e(TAG, "HTTP %d for weather request", code);
-        http.end();
-        return false;
+    for (const ApiEndpoint &endpoint : FORECAST_ENDPOINTS) {
+        String body = apiGet(endpoint, uri);
+        if (body.length() == 0) continue;
+        const bool parsed = _parseWeatherResponse(body);
+        body = String();   // освобождаем ~100 КБ до MQTT/HTTPS
+        if (parsed) {
+            log_i(TAG, "Weather OK via %s (model=%s)", endpoint.address, model.c_str());
+            return true;
+        }
     }
-
-    String body = http.getString();
-    // log_i(TAG, "=== Weather raw response (%d bytes) ===", (int)body.length());
-    // // Print in 200-char chunks to avoid serial truncation
-    // for (int off = 0; off < (int)body.length(); off += 200) {
-    //     log_i(TAG, "%s", body.substring(off, off + 200).c_str());
-    // }
-    bool ok = _parseWeatherResponse(body);
-    http.end();
-    return ok;
+    log_e(TAG, "Weather: all Open-Meteo endpoints failed");
+    return false;
 }
 
 bool WeatherClass::fetchAirQuality(double lat, double lon) {
-    char url[512];
-    snprintf(url, sizeof(url),
-        "http://" AQI_API_HOST "/v1/air-quality"
+    char uri[512];
+    snprintf(uri, sizeof(uri),
+        "/v1/air-quality"
         "?latitude=%.4f&longitude=%.4f"
         "&current=pm2_5,pm10,us_aqi,european_aqi"
         "&hourly=us_aqi,pm2_5,pm10"
         "&forecast_days=4&timezone=auto",
         lat, lon);
 
-    HTTPClient http;
-    http.begin(url);
-    http.setTimeout(WEATHER_HTTP_TIMEOUT);
-    int code = http.GET();
-    if (code != 200) {
-        log_e(TAG, "HTTP %d for AQI request", code);
-        http.end();
-        return false;
+    for (const ApiEndpoint &endpoint : AQI_ENDPOINTS) {
+        String body = apiGet(endpoint, uri);
+        if (body.length() == 0) continue;
+        const bool parsed = _parseAqiResponse(body);
+        body = String();
+        if (parsed) return true;
     }
-
-    bool ok = _parseAqiResponse(http.getString());
-    http.end();
-    return ok;
+    log_w(TAG, "AQI: all Open-Meteo endpoints failed");
+    return false;
 }
 
 bool parseWeatherResponseBody(const String &body, WeatherData &weather) {
